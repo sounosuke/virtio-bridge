@@ -43,7 +43,7 @@ pip install virtio-bridge
 
 Or clone and install:
 ```bash
-git clone https://github.com/sonosuke/virtio-bridge.git
+git clone https://github.com/sounosuke/virtio-bridge.git
 cd virtio-bridge
 pip install -e .
 ```

@@ -27,5 +27,5 @@ classifiers = [
 virtio-bridge = "virtio_bridge.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/sonosuke/virtio-bridge"
-Issues = "https://github.com/sonosuke/virtio-bridge/issues"
+Homepage = "https://github.com/sounosuke/virtio-bridge"
+Issues = "https://github.com/sounosuke/virtio-bridge/issues"
