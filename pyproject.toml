@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "virtio-bridge"
-version = "0.2.0"
+version = "0.2.1"
 description = "HTTP and TCP relay over shared filesystem for VMs with restricted networking"
 readme = "README.md"
 license = {text = "MIT"}
@@ -25,6 +25,7 @@ classifiers = [
 
 [project.optional-dependencies]
 watch = ["watchdog>=3.0"]
+dev = ["pytest>=7.0"]
 
 [project.scripts]
 virtio-bridge = "virtio_bridge.cli:main"

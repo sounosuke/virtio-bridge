@@ -103,6 +103,11 @@ class BridgeDirectory:
         """Create directory structure if it doesn't exist."""
         self.requests_dir.mkdir(parents=True, exist_ok=True)
         self.responses_dir.mkdir(parents=True, exist_ok=True)
+        # Set restrictive permissions on bridge directory
+        try:
+            self.root.chmod(0o700)
+        except OSError:
+            pass  # VirtioFS may not support chmod
 
     def cleanup_stale(self, max_age: float = 300.0) -> int:
         """Remove request/response files older than max_age seconds. Returns count removed."""
@@ -120,6 +125,15 @@ class BridgeDirectory:
                     pass
         return removed
 
+    def _safe_read(self, path: Path) -> Optional[str]:
+        """Read a file safely, rejecting symlinks."""
+        if path.is_symlink():
+            return None
+        try:
+            return path.read_text(encoding="utf-8")
+        except (FileNotFoundError, PermissionError):
+            return None
+
     # --- Request operations (client writes, server reads) ---
 
     def write_request(self, req: BridgeRequest) -> Path:
@@ -132,12 +146,14 @@ class BridgeDirectory:
         return path
 
     def read_request(self, req_id: str) -> Optional[BridgeRequest]:
-        """Read a request file by ID."""
+        """Read a request file by ID. Rejects symlinks."""
         path = self.requests_dir / f"{req_id}{REQUEST_EXT}"
+        data = self._safe_read(path)
+        if data is None:
+            return None
         try:
-            data = path.read_text(encoding="utf-8")
             return BridgeRequest.from_json(data)
-        except (FileNotFoundError, json.JSONDecodeError):
+        except (json.JSONDecodeError, TypeError):
             return None
 
     def consume_request(self, req_id: str) -> Optional[BridgeRequest]:
@@ -172,12 +188,14 @@ class BridgeDirectory:
         return path
 
     def read_response(self, req_id: str) -> Optional[BridgeResponse]:
-        """Read a response file by request ID."""
+        """Read a response file by request ID. Rejects symlinks."""
         path = self.responses_dir / f"{req_id}{RESPONSE_EXT}"
+        data = self._safe_read(path)
+        if data is None:
+            return None
         try:
-            data = path.read_text(encoding="utf-8")
             return BridgeResponse.from_json(data)
-        except (FileNotFoundError, json.JSONDecodeError):
+        except (json.JSONDecodeError, TypeError):
             return None
 
     def wait_response(self, req_id: str, timeout: float = DEFAULT_TIMEOUT) -> Optional[BridgeResponse]:

@@ -183,6 +183,24 @@ virtio-bridge server --target http://localhost:11434 --bridge-dir ~/shared/.brid
 virtio-bridge tcp-relay --bridge-dir ~/shared/.bridge &
 ```
 
+## Security
+
+virtio-bridge is designed for **trusted VM↔host communication** on a single machine. It is not intended for use across untrusted networks.
+
+**What you should know:**
+
+- Request and response data (including HTTP headers and bodies) is stored as **plaintext files** in the shared directory. Any process with access to the shared folder can read this data.
+- The SOCKS5 proxy binds to `127.0.0.1` by default. **Never bind to `0.0.0.0`** in untrusted environments — it would expose the proxy to the network.
+- The bridge directory is created with `700` permissions where the filesystem supports it. On VirtioFS, permission enforcement depends on the host configuration.
+- Request paths are validated to prevent path traversal attacks. Symlinks in the bridge directory are rejected.
+- Stale request/response files are cleaned up automatically (default: 5 minutes), but may contain sensitive data until deleted.
+
+**Recommendations:**
+
+- Keep the bridge directory on a filesystem only accessible to the VM and host user
+- Don't pass sensitive credentials in HTTP headers if other VMs share the same filesystem
+- For production use with sensitive data, consider running behind an additional encryption layer
+
 ## Background
 
 This tool was born from investigating [Cowork VM's networking restrictions](https://github.com/anthropics/claude-code/issues/18671). The VM uses Apple's Virtualization.framework which blocks TCP from VM to host, but VirtioFS folder sharing works bidirectionally. We realized the filesystem itself could serve as a transport layer.

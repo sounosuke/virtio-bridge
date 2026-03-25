@@ -243,6 +243,12 @@ class SocksServer:
         self._server_sock.listen(32)
         self._running = True
 
+        if self.listen_host in ("0.0.0.0", "::"):
+            logger.warning(
+                "WARNING: SOCKS5 proxy is bound to all interfaces! "
+                "This exposes the proxy to the network. Use 127.0.0.1 for local-only access."
+            )
+
         logger.info(f"SOCKS5 proxy started: {self.listen_host}:{self.listen_port}")
         logger.info(f"Bridge directory: {self.tcp_bridge.root}")
 

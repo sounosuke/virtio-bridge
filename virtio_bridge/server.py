@@ -29,6 +29,19 @@ from .watcher import FileWatcher
 logger = logging.getLogger("virtio-bridge.server")
 
 
+def _is_safe_path(path: str) -> bool:
+    """Validate that a request path is safe to forward."""
+    if not path or not path.startswith("/"):
+        return False
+    # Block path traversal
+    if ".." in path:
+        return False
+    # Block null bytes
+    if "\x00" in path:
+        return False
+    return True
+
+
 class BridgeServer:
     """
     Host-side server that watches for request files and forwards them
@@ -107,6 +120,17 @@ class BridgeServer:
         req = self.bridge.consume_request(req_id)
         if req is None:
             logger.warning(f"Request {req_id} disappeared before processing")
+            return
+
+        # Validate request path
+        if not _is_safe_path(req.path):
+            logger.warning(f"Rejected unsafe path: {req.path} (id={req_id})")
+            error_resp = BridgeResponse(
+                id=req_id,
+                status=400,
+                error="Invalid request path",
+            )
+            self.bridge.write_response(error_resp)
             return
 
         logger.info(f"→ {req.method} {req.path} (id={req_id}, stream={req.stream})")
