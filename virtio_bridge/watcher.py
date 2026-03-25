@@ -3,10 +3,8 @@ Filesystem watcher abstraction.
 
 Provides event-driven file change detection with multiple backends:
 - inotify (Linux, preferred for VM side)
+- watchdog (macOS/Linux, uses fsevents on macOS — install with `pip install virtio-bridge[watch]`)
 - polling (universal fallback)
-
-macOS fsevents could be added later but polling works fine for the host side
-since the server is doing I/O-bound HTTP forwarding anyway.
 """
 
 import os
@@ -49,8 +47,14 @@ class FileWatcher(ABC):
         except ImportError:
             pass
 
+        # Try watchdog (macOS fsevents or Linux fallback)
+        try:
+            return WatchdogWatcher(watch_dir, pattern)
+        except ImportError:
+            pass
+
         # Fallback to polling
-        logger.info("Using polling watcher (inotify not available)")
+        logger.info("Using polling watcher (install watchdog for better performance: pip install virtio-bridge[watch])")
         return PollingWatcher(watch_dir, pattern)
 
 
@@ -103,6 +107,63 @@ class InotifyWatcher(FileWatcher):
                     logger.error(f"Callback error for {filepath}: {e}")
         finally:
             i.remove_watch(str(self.watch_dir))
+
+
+class WatchdogWatcher(FileWatcher):
+    """watchdog-based watcher. Uses fsevents on macOS, inotify on Linux."""
+
+    def __init__(self, watch_dir: str | Path, pattern: str = "*.json"):
+        super().__init__(watch_dir, pattern)
+        # Import here to fail fast if not installed
+        from watchdog.observers import Observer  # type: ignore
+        from watchdog.events import FileSystemEventHandler  # type: ignore
+        self._Observer = Observer
+        self._EventHandler = FileSystemEventHandler
+
+    def watch(self, callback: Callable[[Path], None]) -> None:
+        from watchdog.events import FileSystemEventHandler, FileCreatedEvent, FileMovedEvent  # type: ignore
+
+        watcher = self
+        seen: set[str] = set()
+
+        class Handler(FileSystemEventHandler):
+            def on_created(self, event):
+                if event.is_directory:
+                    return
+                self._handle(event.src_path)
+
+            def on_moved(self, event):
+                if event.is_directory:
+                    return
+                self._handle(event.dest_path)
+
+            def _handle(self, filepath_str):
+                filepath = Path(filepath_str)
+                if not filepath.match(watcher.pattern):
+                    return
+                if filepath.suffix == ".tmp":
+                    return
+                if filepath_str in seen:
+                    return
+                seen.add(filepath_str)
+                logger.debug(f"watchdog event: {filepath}")
+                try:
+                    callback(filepath)
+                except Exception as e:
+                    logger.error(f"Callback error for {filepath}: {e}")
+
+        self._running = True
+        observer = self._Observer()
+        observer.schedule(Handler(), str(self.watch_dir), recursive=False)
+        observer.start()
+        logger.info(f"watchdog watching: {self.watch_dir}")
+
+        try:
+            while self._running:
+                time.sleep(0.1)
+        finally:
+            observer.stop()
+            observer.join()
 
 
 class PollingWatcher(FileWatcher):

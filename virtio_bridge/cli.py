@@ -2,11 +2,19 @@
 Command-line interface for virtio-bridge.
 
 Usage:
+    # --- v1: HTTP relay ---
     # Host side (Mac): watch shared dir and forward requests to localhost
     virtio-bridge server --target http://localhost:11434 --bridge-dir /path/to/shared/.bridge
 
     # VM side: start HTTP proxy that relays through filesystem
     virtio-bridge client --listen 127.0.0.1:11434 --bridge-dir /path/to/shared/.bridge
+
+    # --- v2: TCP relay (SOCKS5) ---
+    # Host side (Mac): relay TCP connections to real targets
+    virtio-bridge tcp-relay --bridge-dir /path/to/shared/.bridge
+
+    # VM side: SOCKS5 proxy that relays TCP through filesystem
+    virtio-bridge socks --listen 127.0.0.1:1080 --bridge-dir /path/to/shared/.bridge
 
     # Quick test
     virtio-bridge test --bridge-dir /path/to/shared/.bridge
@@ -98,6 +106,26 @@ def cmd_test(args: argparse.Namespace) -> None:
     logger.info("Test PASSED")
 
 
+def cmd_socks(args: argparse.Namespace) -> None:
+    """Run the VM-side SOCKS5 proxy."""
+    from .socks import run_socks
+    setup_logging(args.verbose)
+
+    host, port = _parse_listen(args.listen)
+    run_socks(
+        bridge_dir=args.bridge_dir,
+        listen_host=host,
+        listen_port=port,
+    )
+
+
+def cmd_tcp_relay(args: argparse.Namespace) -> None:
+    """Run the host-side TCP relay."""
+    from .tcp_relay import run_tcp_relay
+    setup_logging(args.verbose)
+    run_tcp_relay(bridge_dir=args.bridge_dir)
+
+
 def cmd_cleanup(args: argparse.Namespace) -> None:
     """Clean up stale request/response files."""
     setup_logging(args.verbose)
@@ -166,6 +194,37 @@ def main() -> None:
     )
     p_client.add_argument("--verbose", "-v", action="store_true")
     p_client.set_defaults(func=cmd_client)
+
+    # --- socks (v2) ---
+    p_socks = subparsers.add_parser(
+        "socks",
+        help="Run on the VM side: SOCKS5 proxy that relays TCP through filesystem",
+    )
+    p_socks.add_argument(
+        "--listen", "-l",
+        default="127.0.0.1:1080",
+        help="Listen address (host:port or just port). Default: 127.0.0.1:1080",
+    )
+    p_socks.add_argument(
+        "--bridge-dir", "-d",
+        required=True,
+        help="Path to the shared bridge directory",
+    )
+    p_socks.add_argument("--verbose", "-v", action="store_true")
+    p_socks.set_defaults(func=cmd_socks)
+
+    # --- tcp-relay (v2) ---
+    p_tcp_relay = subparsers.add_parser(
+        "tcp-relay",
+        help="Run on the host (Mac) side: relay TCP connections to real targets",
+    )
+    p_tcp_relay.add_argument(
+        "--bridge-dir", "-d",
+        required=True,
+        help="Path to the shared bridge directory",
+    )
+    p_tcp_relay.add_argument("--verbose", "-v", action="store_true")
+    p_tcp_relay.set_defaults(func=cmd_tcp_relay)
 
     # --- test ---
     p_test = subparsers.add_parser(
