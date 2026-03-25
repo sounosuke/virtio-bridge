@@ -146,7 +146,7 @@ class BridgeDirectory:
         if req:
             try:
                 (self.requests_dir / f"{req_id}{REQUEST_EXT}").unlink()
-            except FileNotFoundError:
+            except (FileNotFoundError, PermissionError):
                 pass
         return req
 
@@ -189,7 +189,7 @@ class BridgeDirectory:
                 # Clean up
                 try:
                     (self.responses_dir / f"{req_id}{RESPONSE_EXT}").unlink()
-                except FileNotFoundError:
+                except (FileNotFoundError, PermissionError):
                     pass
                 return resp
             time.sleep(RESPONSE_POLL_INTERVAL)
@@ -256,5 +256,5 @@ class BridgeDirectory:
         for ext in (STREAM_EXT, STREAM_DONE_EXT):
             try:
                 (self.responses_dir / f"{req_id}{ext}").unlink()
-            except FileNotFoundError:
+            except (FileNotFoundError, PermissionError):
                 pass

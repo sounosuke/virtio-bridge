@@ -159,7 +159,7 @@ class BridgeProxyHandler(BaseHTTPRequestHandler):
             self.wfile.write(error_body)
             try:
                 (self.bridge.responses_dir / f"{req.id}.json").unlink()
-            except FileNotFoundError:
+            except (FileNotFoundError, PermissionError):
                 pass
             return
 
