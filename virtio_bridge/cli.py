@@ -27,7 +27,20 @@ import sys
 import time
 
 from . import __version__
+from .config import load_config, apply_config
 from .protocol import BridgeDirectory, BridgeRequest, DEFAULT_TIMEOUT
+from .security import parse_allow_hosts
+
+ALLOW_HOST_DEFAULT = "localhost,127.0.0.1,::1"
+
+
+def _apply_config_if_present(args: argparse.Namespace, section: str, defaults: dict) -> None:
+    """Load and apply config file if --config was specified."""
+    config_path = getattr(args, "config", None)
+    if config_path:
+        config = load_config(config_path, section)
+        if config:
+            apply_config(args, config, defaults)
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -42,16 +55,26 @@ def setup_logging(verbose: bool = False) -> None:
 def cmd_server(args: argparse.Namespace) -> None:
     """Run the host-side server."""
     from .server import run_server
+    _apply_config_if_present(args, "server", {
+        "target": None, "bridge_dir": None,
+        "allow_host": ALLOW_HOST_DEFAULT, "verbose": False,
+    })
     setup_logging(args.verbose)
+    allow_hosts = parse_allow_hosts(args.allow_host)
     run_server(
         bridge_dir=args.bridge_dir,
         target=args.target,
+        allow_hosts=allow_hosts,
     )
 
 
 def cmd_client(args: argparse.Namespace) -> None:
     """Run the VM-side client proxy."""
     from .client import run_client
+    _apply_config_if_present(args, "client", {
+        "listen": "127.0.0.1:8080", "bridge_dir": None,
+        "timeout": DEFAULT_TIMEOUT, "verbose": False,
+    })
     setup_logging(args.verbose)
 
     host, port = _parse_listen(args.listen)
@@ -109,6 +132,9 @@ def cmd_test(args: argparse.Namespace) -> None:
 def cmd_socks(args: argparse.Namespace) -> None:
     """Run the VM-side SOCKS5 proxy."""
     from .socks import run_socks
+    _apply_config_if_present(args, "socks", {
+        "listen": "127.0.0.1:1080", "bridge_dir": None, "verbose": False,
+    })
     setup_logging(args.verbose)
 
     host, port = _parse_listen(args.listen)
@@ -122,8 +148,21 @@ def cmd_socks(args: argparse.Namespace) -> None:
 def cmd_tcp_relay(args: argparse.Namespace) -> None:
     """Run the host-side TCP relay."""
     from .tcp_relay import run_tcp_relay
+    _apply_config_if_present(args, "tcp-relay", {
+        "bridge_dir": None, "allow_host": ALLOW_HOST_DEFAULT, "verbose": False,
+    })
     setup_logging(args.verbose)
-    run_tcp_relay(bridge_dir=args.bridge_dir)
+    allow_hosts = parse_allow_hosts(args.allow_host)
+    run_tcp_relay(bridge_dir=args.bridge_dir, allow_hosts=allow_hosts)
+
+
+def cmd_integration_test(args: argparse.Namespace) -> None:
+    """Run self-contained integration tests."""
+    setup_logging(args.verbose)
+    # Import here to avoid circular imports
+    from tests.test_integration import run_integration_test
+    success = run_integration_test()
+    sys.exit(0 if success else 1)
 
 
 def cmd_cleanup(args: argparse.Namespace) -> None:
@@ -150,6 +189,11 @@ def main() -> None:
         description="HTTP relay over shared filesystem for VMs with restricted networking",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument(
+        "--config", "-c",
+        default=None,
+        help="Path to TOML config file (e.g., bridge.toml). CLI flags override config values.",
+    )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -167,6 +211,11 @@ def main() -> None:
         "--bridge-dir", "-d",
         required=True,
         help="Path to the shared bridge directory",
+    )
+    p_server.add_argument(
+        "--allow-host",
+        default=ALLOW_HOST_DEFAULT,
+        help=f"Comma-separated list of allowed target hosts. Default: {ALLOW_HOST_DEFAULT}",
     )
     p_server.add_argument("--verbose", "-v", action="store_true")
     p_server.set_defaults(func=cmd_server)
@@ -223,6 +272,11 @@ def main() -> None:
         required=True,
         help="Path to the shared bridge directory",
     )
+    p_tcp_relay.add_argument(
+        "--allow-host",
+        default=ALLOW_HOST_DEFAULT,
+        help=f"Comma-separated list of allowed destination hosts. Default: {ALLOW_HOST_DEFAULT}",
+    )
     p_tcp_relay.add_argument("--verbose", "-v", action="store_true")
     p_tcp_relay.set_defaults(func=cmd_tcp_relay)
 
@@ -244,6 +298,14 @@ def main() -> None:
     )
     p_test.add_argument("--verbose", "-v", action="store_true")
     p_test.set_defaults(func=cmd_test)
+
+    # --- integration-test ---
+    p_integ = subparsers.add_parser(
+        "integration-test",
+        help="Run self-contained integration tests (no VirtioFS or external services needed)",
+    )
+    p_integ.add_argument("--verbose", "-v", action="store_true")
+    p_integ.set_defaults(func=cmd_integration_test)
 
     # --- cleanup ---
     p_cleanup = subparsers.add_parser(

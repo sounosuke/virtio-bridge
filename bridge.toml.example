@@ -1,0 +1,26 @@
+# virtio-bridge configuration file
+#
+# Usage: virtio-bridge --config bridge.toml server
+# CLI flags override values in this file.
+
+[server]
+target = "http://localhost:11434"
+bridge_dir = "~/.bridge"
+allow_host = "localhost,127.0.0.1,::1"
+verbose = false
+
+[client]
+listen = "127.0.0.1:11434"
+bridge_dir = "~/.bridge"
+timeout = 30.0
+verbose = false
+
+[socks]
+listen = "127.0.0.1:1080"
+bridge_dir = "~/.bridge"
+verbose = false
+
+[tcp-relay]
+bridge_dir = "~/.bridge"
+allow_host = "localhost,127.0.0.1,::1"
+verbose = false

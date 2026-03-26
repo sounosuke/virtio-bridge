@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from .tcp_protocol import TcpBridgeDirectory, TcpConnection
+from .security import LOCAL_HOSTS, is_host_allowed
 
 logger = logging.getLogger("virtio-bridge.tcp-relay")
 
@@ -75,8 +76,9 @@ class TcpRelayServer:
     Watches for connection requests and establishes real TCP connections.
     """
 
-    def __init__(self, bridge_dir: str | Path):
+    def __init__(self, bridge_dir: str | Path, allow_hosts: frozenset[str] | None = None):
         self.tcp_bridge = TcpBridgeDirectory(bridge_dir)
+        self.allow_hosts = allow_hosts or LOCAL_HOSTS
         self._running = False
         self._active_conns: set[str] = set()
 
@@ -118,6 +120,13 @@ class TcpRelayServer:
 
         logger.info(f"→ TCP CONNECT {req.host}:{req.port} (conn={conn_id})")
 
+        # Check host against allow list
+        if not is_host_allowed(req.host, self.allow_hosts):
+            msg = f"Host '{req.host}' is not in the allow list: {sorted(self.allow_hosts)}"
+            logger.warning(f"← {conn_id} BLOCKED: {msg}")
+            conn.signal_error(msg)
+            return
+
         try:
             target_sock = socket.create_connection(
                 (req.host, req.port),
@@ -157,9 +166,9 @@ class TcpRelayServer:
             logger.info("TCP relay stopped")
 
 
-def run_tcp_relay(bridge_dir: str) -> None:
+def run_tcp_relay(bridge_dir: str, allow_hosts: frozenset[str] | None = None) -> None:
     """Entry point for running the TCP relay server."""
-    server = TcpRelayServer(bridge_dir=bridge_dir)
+    server = TcpRelayServer(bridge_dir=bridge_dir, allow_hosts=allow_hosts)
 
     def signal_handler(sig, frame):
         logger.info("Shutting down...")

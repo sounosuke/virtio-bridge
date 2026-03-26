@@ -24,6 +24,7 @@ from .protocol import (
     BridgeRequest,
     BridgeResponse,
 )
+from .security import LOCAL_HOSTS, parse_allow_hosts, validate_target_url
 from .watcher import FileWatcher
 
 logger = logging.getLogger("virtio-bridge.server")
@@ -53,12 +54,17 @@ class BridgeServer:
         bridge_dir: str | Path,
         target: str = "http://localhost:8080",
         workers: int = 4,
+        allow_hosts: frozenset[str] | None = None,
     ):
         self.bridge = BridgeDirectory(bridge_dir)
         self.target = target.rstrip("/")
         self.workers = workers
+        self.allow_hosts = allow_hosts or LOCAL_HOSTS
         self._running = False
         self._watcher: Optional[FileWatcher] = None
+
+        # Validate target against allow list at startup
+        validate_target_url(self.target, self.allow_hosts)
 
     def start(self) -> None:
         """Start the server. Blocks until stopped."""
@@ -245,9 +251,13 @@ class BridgeServer:
             self.bridge.write_response(error_resp)
 
 
-def run_server(bridge_dir: str, target: str = "http://localhost:8080") -> None:
+def run_server(
+    bridge_dir: str,
+    target: str = "http://localhost:8080",
+    allow_hosts: frozenset[str] | None = None,
+) -> None:
     """Entry point for running the server."""
-    server = BridgeServer(bridge_dir=bridge_dir, target=target)
+    server = BridgeServer(bridge_dir=bridge_dir, target=target, allow_hosts=allow_hosts)
 
     def signal_handler(sig, frame):
         logger.info("Shutting down...")

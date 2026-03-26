@@ -148,12 +148,23 @@ File watching priority: inotify (Linux) → watchdog (macOS/Linux, `pip install 
 
 ## Configuration
 
+### Config File
+
+Instead of passing flags every time, you can use a TOML config file:
+
+```bash
+virtio-bridge --config bridge.toml server
+```
+
+See `bridge.toml.example` for the full format. CLI flags always override config values.
+
 ### HTTP Mode
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--target` | (required) | URL to forward requests to |
 | `--bridge-dir` | (required) | Path to shared bridge directory |
+| `--allow-host` | `localhost,127.0.0.1,::1` | Allowed target hosts (comma-separated) |
 | `--listen` | `127.0.0.1:8080` | Client listen address |
 | `--timeout` | `30.0` | Response timeout (seconds) |
 | `--verbose` | off | Debug logging |
@@ -163,6 +174,7 @@ File watching priority: inotify (Linux) → watchdog (macOS/Linux, `pip install 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--bridge-dir` | (required) | Path to shared bridge directory |
+| `--allow-host` | `localhost,127.0.0.1,::1` | Allowed destination hosts (comma-separated) |
 | `--listen` | `127.0.0.1:1080` | SOCKS5 listen address |
 | `--verbose` | off | Debug logging |
 
@@ -187,9 +199,12 @@ virtio-bridge tcp-relay --bridge-dir ~/shared/.bridge &
 
 virtio-bridge is designed for **trusted VM↔host communication** on a single machine. It is not intended for use across untrusted networks.
 
+**Important: write access to the bridge directory = network access through the host.** Any process or user that can write JSON files to the bridge directory can make the host-side server/relay issue HTTP requests or TCP connections on their behalf. This is by design — virtio-bridge exists to bypass VM network restrictions via the filesystem — but you must ensure only trusted processes have write access to the bridge directory.
+
 **What you should know:**
 
 - Request and response data (including HTTP headers and bodies) is stored as **plaintext files** in the shared directory. Any process with access to the shared folder can read this data.
+- Both HTTP server and TCP relay restrict destinations to `localhost` by default via `--allow-host`. If you need to reach other hosts, add them explicitly (e.g., `--allow-host localhost,127.0.0.1,192.168.1.100`).
 - The SOCKS5 proxy binds to `127.0.0.1` by default. **Never bind to `0.0.0.0`** in untrusted environments — it would expose the proxy to the network.
 - The bridge directory is created with `700` permissions where the filesystem supports it. On VirtioFS, permission enforcement depends on the host configuration.
 - Request paths are validated to prevent path traversal attacks. Symlinks in the bridge directory are rejected.
@@ -198,8 +213,67 @@ virtio-bridge is designed for **trusted VM↔host communication** on a single ma
 **Recommendations:**
 
 - Keep the bridge directory on a filesystem only accessible to the VM and host user
+- Use `--allow-host` to restrict destinations to only the hosts you need (default: localhost only)
 - Don't pass sensitive credentials in HTTP headers if other VMs share the same filesystem
+- On shared machines, ensure other users cannot write to your bridge directory
 - For production use with sensitive data, consider running behind an additional encryption layer
+
+## Testing
+
+### Quick Integration Test (no setup required)
+
+Run the full pipeline on a single machine — no VirtioFS, no external services:
+
+```bash
+git clone https://github.com/sounosuke/virtio-bridge.git
+cd virtio-bridge
+python3 -m virtio_bridge.cli integration-test
+```
+
+This spins up echo servers, bridge server/client, SOCKS5 proxy, and TCP relay internally, then runs 4 end-to-end tests (HTTP GET, HTTP POST, SOCKS5 connect, SOCKS5 error handling).
+
+### Unit Tests
+
+```bash
+pip install pytest
+pytest tests/
+```
+
+### Real Machine Test (VirtioFS)
+
+For testing across the actual VM↔host boundary with a real service:
+
+**HTTP mode** — on the host, start the server; in the VM, start the client:
+
+```bash
+# Host
+python3 -m virtio_bridge.cli server \
+  --target http://localhost:11434 \
+  --bridge-dir ~/shared/.bridge
+
+# VM
+python3 -m virtio_bridge.cli client \
+  --listen 127.0.0.1:11434 \
+  --bridge-dir /mnt/shared/.bridge
+
+# VM: test
+curl http://localhost:11434/v1/models
+```
+
+**SOCKS5 mode** — on the host, start the TCP relay; in the VM, start the SOCKS5 proxy:
+
+```bash
+# Host
+python3 -m virtio_bridge.cli tcp-relay --bridge-dir ~/shared/.bridge
+
+# VM
+python3 -m virtio_bridge.cli socks \
+  --listen 127.0.0.1:1080 \
+  --bridge-dir /mnt/shared/.bridge
+
+# VM: test
+curl -x socks5h://127.0.0.1:1080 http://localhost:11434/v1/models
+```
 
 ## Background
 

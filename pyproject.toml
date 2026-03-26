@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "virtio-bridge"
-version = "0.2.1"
+version = "0.3.0"
 description = "HTTP and TCP relay over shared filesystem for VMs with restricted networking"
 readme = "README.md"
 license = {text = "MIT"}
@@ -25,6 +25,7 @@ classifiers = [
 
 [project.optional-dependencies]
 watch = ["watchdog>=3.0"]
+config = ["tomli>=2.0; python_version < '3.11'"]
 dev = ["pytest>=7.0"]
 
 [project.scripts]
