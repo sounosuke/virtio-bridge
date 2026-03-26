@@ -55,8 +55,9 @@ class BridgeServer:
         target: str = "http://localhost:8080",
         workers: int = 4,
         allow_hosts: frozenset[str] | None = None,
+        crypto=None,
     ):
-        self.bridge = BridgeDirectory(bridge_dir)
+        self.bridge = BridgeDirectory(bridge_dir, crypto=crypto)
         self.target = target.rstrip("/")
         self.workers = workers
         self.allow_hosts = allow_hosts or LOCAL_HOSTS
@@ -79,7 +80,8 @@ class BridgeServer:
         self._process_existing_requests()
 
         self._running = True
-        self._watcher = FileWatcher.create(self.bridge.requests_dir)
+        watch_pattern = "*.enc" if self.bridge.crypto else "*.json"
+        self._watcher = FileWatcher.create(self.bridge.requests_dir, pattern=watch_pattern)
 
         logger.info(f"Server started: {self.bridge.root} → {self.target}")
         logger.info(f"Watching for requests in: {self.bridge.requests_dir}")
@@ -110,7 +112,7 @@ class BridgeServer:
     def _on_request_file(self, filepath: Path) -> None:
         """Called when a new request file is detected."""
         req_id = filepath.stem
-        if req_id.endswith(".tmp"):
+        if req_id.endswith(".tmp") or filepath.suffix == ".tmp":
             return
 
         # Use threading for concurrent request handling
@@ -255,9 +257,10 @@ def run_server(
     bridge_dir: str,
     target: str = "http://localhost:8080",
     allow_hosts: frozenset[str] | None = None,
+    crypto=None,
 ) -> None:
     """Entry point for running the server."""
-    server = BridgeServer(bridge_dir=bridge_dir, target=target, allow_hosts=allow_hosts)
+    server = BridgeServer(bridge_dir=bridge_dir, target=target, allow_hosts=allow_hosts, crypto=crypto)
 
     def signal_handler(sig, frame):
         logger.info("Shutting down...")

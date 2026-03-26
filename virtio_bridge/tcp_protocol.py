@@ -72,11 +72,14 @@ class TcpConnection:
     Used by both client (VM) and server (host) sides.
     """
 
-    def __init__(self, tcp_dir: Path, conn_id: str):
+    def __init__(self, tcp_dir: Path, conn_id: str, crypto=None):
         self.conn_dir = tcp_dir / conn_id
         self.conn_id = conn_id
+        self.crypto = crypto  # Optional BridgeCrypto instance
         self._upstream_pos = 0
         self._downstream_pos = 0
+        self._upstream_buf = b""
+        self._downstream_buf = b""
 
     @property
     def connect_path(self) -> Path:
@@ -112,15 +115,28 @@ class TcpConnection:
         """Client side: create connection directory and write connect request."""
         self.conn_dir.mkdir(parents=True, exist_ok=True)
         req = TcpConnectRequest(conn_id=self.conn_id, host=host, port=port)
-        tmp = self.connect_path.with_suffix(".tmp")
-        tmp.write_text(req.to_json(), encoding="utf-8")
-        tmp.rename(self.connect_path)
+        if self.crypto:
+            path = self.connect_path.with_suffix(".enc")
+            tmp = path.with_suffix(".tmp")
+            tmp.write_bytes(self.crypto.encrypt_text(req.to_json()))
+            tmp.rename(path)
+        else:
+            tmp = self.connect_path.with_suffix(".tmp")
+            tmp.write_text(req.to_json(), encoding="utf-8")
+            tmp.rename(self.connect_path)
         return req
 
     def read_connect_request(self) -> Optional[TcpConnectRequest]:
         """Server side: read connect request."""
         try:
-            data = self.connect_path.read_text(encoding="utf-8")
+            if self.crypto:
+                data = self.crypto.decrypt_text(
+                    self.connect_path.with_suffix(".enc").read_bytes()
+                )
+                if data is None:
+                    return None
+            else:
+                data = self.connect_path.read_text(encoding="utf-8")
             return TcpConnectRequest.from_json(data)
         except (FileNotFoundError, json.JSONDecodeError):
             return None
@@ -132,7 +148,10 @@ class TcpConnection:
     def signal_error(self, message: str) -> None:
         """Server side: signal connection error."""
         data = json.dumps({"error": message, "timestamp": time.time()})
-        self.error_path.write_text(data, encoding="utf-8")
+        if self.crypto:
+            self.error_path.write_bytes(self.crypto.encrypt_text(data))
+        else:
+            self.error_path.write_text(data, encoding="utf-8")
 
     def wait_established(self, timeout: float = CONNECT_TIMEOUT) -> bool:
         """Client side: wait for connection to be established. Returns False on error/timeout."""
@@ -148,7 +167,13 @@ class TcpConnection:
     def get_error(self) -> Optional[str]:
         """Read error message if any."""
         try:
-            data = json.loads(self.error_path.read_text(encoding="utf-8"))
+            if self.crypto:
+                text = self.crypto.decrypt_text(self.error_path.read_bytes())
+                if text is None:
+                    return None
+                data = json.loads(text)
+            else:
+                data = json.loads(self.error_path.read_text(encoding="utf-8"))
             return data.get("error", "Unknown error")
         except (FileNotFoundError, json.JSONDecodeError):
             return None
@@ -157,24 +182,34 @@ class TcpConnection:
 
     def write_upstream(self, data: bytes) -> None:
         """Client side: send data to target."""
-        with open(self.upstream_path, "ab") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
+        self._write_stream(self.upstream_path, data)
 
     def write_downstream(self, data: bytes) -> None:
         """Server side: send data to client."""
-        with open(self.downstream_path, "ab") as f:
-            f.write(data)
+        self._write_stream(self.downstream_path, data)
+
+    def _write_stream(self, path: Path, data: bytes) -> None:
+        """Write data to a stream file, encrypting if crypto is enabled."""
+        with open(path, "ab") as f:
+            if self.crypto:
+                encrypted = self.crypto.encrypt(data)
+                f.write(len(encrypted).to_bytes(4, "big"))
+                f.write(encrypted)
+            else:
+                f.write(data)
             f.flush()
             os.fsync(f.fileno())
 
     def read_upstream(self) -> bytes:
         """Server side: read new upstream data since last read."""
+        if self.crypto:
+            return self._read_incremental_encrypted(self.upstream_path, "_upstream_pos", "_upstream_buf")
         return self._read_incremental(self.upstream_path, "_upstream_pos")
 
     def read_downstream(self) -> bytes:
         """Client side: read new downstream data since last read."""
+        if self.crypto:
+            return self._read_incremental_encrypted(self.downstream_path, "_downstream_pos", "_downstream_buf")
         return self._read_incremental(self.downstream_path, "_downstream_pos")
 
     def _read_incremental(self, path: Path, pos_attr: str) -> bytes:
@@ -189,6 +224,35 @@ class TcpConnection:
                 return data
         except FileNotFoundError:
             return b""
+
+    def _read_incremental_encrypted(self, path: Path, pos_attr: str, buf_attr: str) -> bytes:
+        """Read and decrypt new data from an encrypted stream file."""
+        pos = getattr(self, pos_attr)
+        buf = getattr(self, buf_attr)
+        try:
+            with open(path, "rb") as f:
+                f.seek(pos)
+                new_data = f.read()
+                if new_data:
+                    setattr(self, pos_attr, pos + len(new_data))
+                    buf += new_data
+        except FileNotFoundError:
+            return b""
+
+        # Parse complete chunks
+        result = b""
+        while len(buf) >= 4:
+            chunk_len = int.from_bytes(buf[:4], "big")
+            if len(buf) < 4 + chunk_len:
+                break
+            encrypted = buf[4:4 + chunk_len]
+            buf = buf[4 + chunk_len:]
+            plaintext = self.crypto.decrypt(encrypted)
+            if plaintext is not None:
+                result += plaintext
+
+        setattr(self, buf_attr, buf)
+        return result
 
     def iter_downstream(self, timeout: float = 30.0) -> Iterator[bytes]:
         """Client side: iterate over downstream data chunks."""
@@ -255,9 +319,10 @@ class TcpConnection:
 class TcpBridgeDirectory:
     """Manages the TCP section of the bridge directory."""
 
-    def __init__(self, bridge_root: str | Path):
+    def __init__(self, bridge_root: str | Path, crypto=None):
         self.root = Path(bridge_root)
         self.tcp_dir = self.root / TCP_DIR
+        self.crypto = crypto
 
     def init(self) -> None:
         self.tcp_dir.mkdir(parents=True, exist_ok=True)
@@ -265,7 +330,7 @@ class TcpBridgeDirectory:
     def new_connection(self, conn_id: str = "") -> TcpConnection:
         if not conn_id:
             conn_id = uuid.uuid4().hex[:12]
-        return TcpConnection(self.tcp_dir, conn_id)
+        return TcpConnection(self.tcp_dir, conn_id, crypto=self.crypto)
 
     def list_pending_connections(self) -> list[str]:
         """List connection IDs that have a connect.json but no established/error."""
@@ -274,10 +339,13 @@ class TcpBridgeDirectory:
             for d in self.tcp_dir.iterdir():
                 if not d.is_dir():
                     continue
+                # Check for both plaintext and encrypted connect files
                 connect = d / CONNECT_FILE
+                connect_enc = d / "connect.enc"
                 established = d / ESTABLISHED_FILE
                 error = d / ERROR_FILE
-                if connect.exists() and not established.exists() and not error.exists():
+                has_connect = connect.exists() or connect_enc.exists()
+                if has_connect and not established.exists() and not error.exists():
                     pending.append(d.name)
         except OSError:
             pass

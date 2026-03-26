@@ -34,6 +34,14 @@ from .security import parse_allow_hosts
 ALLOW_HOST_DEFAULT = "localhost,127.0.0.1,::1"
 
 
+def _make_crypto(secret: str | None):
+    """Create BridgeCrypto from --secret flag. Returns None if not set."""
+    if not secret:
+        return None
+    from .crypto import BridgeCrypto
+    return BridgeCrypto(secret)
+
+
 def _apply_config_if_present(args: argparse.Namespace, section: str, defaults: dict) -> None:
     """Load and apply config file if --config was specified."""
     config_path = getattr(args, "config", None)
@@ -61,10 +69,12 @@ def cmd_server(args: argparse.Namespace) -> None:
     })
     setup_logging(args.verbose)
     allow_hosts = parse_allow_hosts(args.allow_host)
+    crypto = _make_crypto(getattr(args, "secret", None))
     run_server(
         bridge_dir=args.bridge_dir,
         target=args.target,
         allow_hosts=allow_hosts,
+        crypto=crypto,
     )
 
 
@@ -78,11 +88,13 @@ def cmd_client(args: argparse.Namespace) -> None:
     setup_logging(args.verbose)
 
     host, port = _parse_listen(args.listen)
+    crypto = _make_crypto(getattr(args, "secret", None))
     run_client(
         bridge_dir=args.bridge_dir,
         listen_host=host,
         listen_port=port,
         timeout=args.timeout,
+        crypto=crypto,
     )
 
 
@@ -138,10 +150,12 @@ def cmd_socks(args: argparse.Namespace) -> None:
     setup_logging(args.verbose)
 
     host, port = _parse_listen(args.listen)
+    crypto = _make_crypto(getattr(args, "secret", None))
     run_socks(
         bridge_dir=args.bridge_dir,
         listen_host=host,
         listen_port=port,
+        crypto=crypto,
     )
 
 
@@ -153,7 +167,8 @@ def cmd_tcp_relay(args: argparse.Namespace) -> None:
     })
     setup_logging(args.verbose)
     allow_hosts = parse_allow_hosts(args.allow_host)
-    run_tcp_relay(bridge_dir=args.bridge_dir, allow_hosts=allow_hosts)
+    crypto = _make_crypto(getattr(args, "secret", None))
+    run_tcp_relay(bridge_dir=args.bridge_dir, allow_hosts=allow_hosts, crypto=crypto)
 
 
 def cmd_integration_test(args: argparse.Namespace) -> None:
@@ -217,6 +232,11 @@ def main() -> None:
         default=ALLOW_HOST_DEFAULT,
         help=f"Comma-separated list of allowed target hosts. Default: {ALLOW_HOST_DEFAULT}",
     )
+    p_server.add_argument(
+        "--secret", "-s",
+        default=None,
+        help="Shared secret for AES-256-GCM encryption. Both sides must use the same secret.",
+    )
     p_server.add_argument("--verbose", "-v", action="store_true")
     p_server.set_defaults(func=cmd_server)
 
@@ -241,6 +261,11 @@ def main() -> None:
         default=DEFAULT_TIMEOUT,
         help=f"Response timeout in seconds. Default: {DEFAULT_TIMEOUT}",
     )
+    p_client.add_argument(
+        "--secret", "-s",
+        default=None,
+        help="Shared secret for AES-256-GCM encryption. Must match the server's secret.",
+    )
     p_client.add_argument("--verbose", "-v", action="store_true")
     p_client.set_defaults(func=cmd_client)
 
@@ -259,6 +284,11 @@ def main() -> None:
         required=True,
         help="Path to the shared bridge directory",
     )
+    p_socks.add_argument(
+        "--secret", "-s",
+        default=None,
+        help="Shared secret for AES-256-GCM encryption. Must match the tcp-relay's secret.",
+    )
     p_socks.add_argument("--verbose", "-v", action="store_true")
     p_socks.set_defaults(func=cmd_socks)
 
@@ -276,6 +306,11 @@ def main() -> None:
         "--allow-host",
         default=ALLOW_HOST_DEFAULT,
         help=f"Comma-separated list of allowed destination hosts. Default: {ALLOW_HOST_DEFAULT}",
+    )
+    p_tcp_relay.add_argument(
+        "--secret", "-s",
+        default=None,
+        help="Shared secret for AES-256-GCM encryption. Must match the socks proxy's secret.",
     )
     p_tcp_relay.add_argument("--verbose", "-v", action="store_true")
     p_tcp_relay.set_defaults(func=cmd_tcp_relay)

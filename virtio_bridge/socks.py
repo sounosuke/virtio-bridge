@@ -225,8 +225,9 @@ class SocksServer:
         bridge_dir: str | Path,
         listen_host: str = "127.0.0.1",
         listen_port: int = 1080,
+        crypto=None,
     ):
-        self.tcp_bridge = TcpBridgeDirectory(bridge_dir)
+        self.tcp_bridge = TcpBridgeDirectory(bridge_dir, crypto=crypto)
         self.listen_host = listen_host
         self.listen_port = listen_port
         self._server_sock: Optional[socket.socket] = None
@@ -283,12 +284,14 @@ def run_socks(
     bridge_dir: str,
     listen_host: str = "127.0.0.1",
     listen_port: int = 1080,
+    crypto=None,
 ) -> None:
     """Entry point for running the SOCKS5 proxy."""
     server = SocksServer(
         bridge_dir=bridge_dir,
         listen_host=listen_host,
         listen_port=listen_port,
+        crypto=crypto,
     )
 
     def signal_handler(sig, frame):

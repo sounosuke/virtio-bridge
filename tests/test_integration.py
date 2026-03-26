@@ -268,6 +268,103 @@ def run_integration_test() -> bool:
     relay.stop()
     tcp_echo.stop()
     echo_srv.shutdown()
+    time.sleep(0.3)
+
+    # ------------------------------------------------------------------
+    # 5. Encrypted mode: HTTP with --secret
+    # ------------------------------------------------------------------
+    has_crypto = False
+    try:
+        from virtio_bridge.crypto import BridgeCrypto
+        has_crypto = True
+    except ImportError:
+        pass
+
+    if has_crypto:
+        print("\nEncrypted HTTP mode:")
+        enc_tmpdir = tempfile.mkdtemp(prefix="virtio-bridge-enc-test-")
+        enc_bridge_dir = str(Path(enc_tmpdir) / ".bridge")
+        test_secret = "integration-test-secret-42"
+        crypto = BridgeCrypto(test_secret)
+
+        enc_echo_port = _find_free_port()
+        enc_echo_srv = HTTPServer(("127.0.0.1", enc_echo_port), _EchoHandler)
+        threading.Thread(target=enc_echo_srv.serve_forever, daemon=True).start()
+
+        enc_server = BridgeServer(
+            bridge_dir=enc_bridge_dir,
+            target=f"http://127.0.0.1:{enc_echo_port}",
+            crypto=crypto,
+        )
+        threading.Thread(target=enc_server.start, daemon=True).start()
+        time.sleep(0.3)
+
+        enc_client_port = _find_free_port()
+        enc_client = BridgeClient(
+            bridge_dir=enc_bridge_dir,
+            listen_host="127.0.0.1",
+            listen_port=enc_client_port,
+            timeout=10.0,
+            crypto=crypto,
+        )
+        threading.Thread(target=enc_client.start, daemon=True).start()
+        time.sleep(0.3)
+
+        # Test E: Encrypted HTTP GET
+        try:
+            url = f"http://127.0.0.1:{enc_client_port}/v1/models"
+            with urllib.request.urlopen(url, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+            assert data["method"] == "GET"
+            assert data["path"] == "/v1/models"
+            _print("GET /v1/models (encrypted) → 200 OK")
+            passed += 1
+        except Exception as e:
+            _print(f"GET /v1/models (encrypted) → {e}", ok=False)
+            failed += 1
+
+        # Test F: Encrypted HTTP POST
+        try:
+            url = f"http://127.0.0.1:{enc_client_port}/v1/chat/completions"
+            payload = json.dumps({"model": "enc-test", "messages": [{"role": "user", "content": "secret"}]}).encode()
+            req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+            assert data["method"] == "POST"
+            assert "enc-test" in data["body"]
+            _print("POST /v1/chat/completions (encrypted) → 200 OK")
+            passed += 1
+        except Exception as e:
+            _print(f"POST /v1/chat/completions (encrypted) → {e}", ok=False)
+            failed += 1
+
+        # Test G: Verify files on disk are actually encrypted (not readable as JSON)
+        try:
+            from virtio_bridge.protocol import BridgeDirectory, BridgeRequest
+            enc_bridge = BridgeDirectory(enc_bridge_dir, crypto=crypto)
+            enc_bridge.init()
+            test_req = BridgeRequest(id="", method="GET", path="/test-verify")
+            written_path = enc_bridge.write_request(test_req)
+            # The file should be .enc, not .json
+            assert written_path.suffix == ".enc", f"Expected .enc, got {written_path.suffix}"
+            # Raw bytes should not contain readable JSON
+            raw = written_path.read_bytes()
+            assert b'"method"' not in raw, "File content is not encrypted!"
+            # But decrypting should work
+            decrypted = crypto.decrypt_text(raw)
+            assert '"method"' in decrypted
+            written_path.unlink()
+            _print("Files on disk are encrypted (not plaintext)")
+            passed += 1
+        except Exception as e:
+            _print(f"Encryption verification → {e}", ok=False)
+            failed += 1
+
+        enc_client.stop()
+        enc_server.stop()
+        enc_echo_srv.shutdown()
+    else:
+        print("\nEncrypted mode: SKIPPED (cryptography package not installed)")
 
     # ------------------------------------------------------------------
     # Summary

@@ -209,8 +209,9 @@ class BridgeClient:
         listen_host: str = "127.0.0.1",
         listen_port: int = 8080,
         timeout: float = DEFAULT_TIMEOUT,
+        crypto=None,
     ):
-        self.bridge = BridgeDirectory(bridge_dir)
+        self.bridge = BridgeDirectory(bridge_dir, crypto=crypto)
         self.listen_host = listen_host
         self.listen_port = listen_port
         self.timeout = timeout
@@ -260,6 +261,7 @@ def run_client(
     listen_host: str = "127.0.0.1",
     listen_port: int = 8080,
     timeout: float = DEFAULT_TIMEOUT,
+    crypto=None,
 ) -> None:
     """Entry point for running the client."""
     client = BridgeClient(
@@ -267,6 +269,7 @@ def run_client(
         listen_host=listen_host,
         listen_port=listen_port,
         timeout=timeout,
+        crypto=crypto,
     )
 
     def signal_handler(sig, frame):

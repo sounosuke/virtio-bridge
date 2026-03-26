@@ -76,8 +76,8 @@ class TcpRelayServer:
     Watches for connection requests and establishes real TCP connections.
     """
 
-    def __init__(self, bridge_dir: str | Path, allow_hosts: frozenset[str] | None = None):
-        self.tcp_bridge = TcpBridgeDirectory(bridge_dir)
+    def __init__(self, bridge_dir: str | Path, allow_hosts: frozenset[str] | None = None, crypto=None):
+        self.tcp_bridge = TcpBridgeDirectory(bridge_dir, crypto=crypto)
         self.allow_hosts = allow_hosts or LOCAL_HOSTS
         self._running = False
         self._active_conns: set[str] = set()
@@ -166,9 +166,9 @@ class TcpRelayServer:
             logger.info("TCP relay stopped")
 
 
-def run_tcp_relay(bridge_dir: str, allow_hosts: frozenset[str] | None = None) -> None:
+def run_tcp_relay(bridge_dir: str, allow_hosts: frozenset[str] | None = None, crypto=None) -> None:
     """Entry point for running the TCP relay server."""
-    server = TcpRelayServer(bridge_dir=bridge_dir, allow_hosts=allow_hosts)
+    server = TcpRelayServer(bridge_dir=bridge_dir, allow_hosts=allow_hosts, crypto=crypto)
 
     def signal_handler(sig, frame):
         logger.info("Shutting down...")

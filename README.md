@@ -54,6 +54,9 @@ pip install virtio-bridge
 
 # With native file watching (recommended for macOS host)
 pip install virtio-bridge[watch]
+
+# With encryption support
+pip install virtio-bridge[crypto]
 ```
 
 Or clone and install:
@@ -165,6 +168,7 @@ See `bridge.toml.example` for the full format. CLI flags always override config 
 | `--target` | (required) | URL to forward requests to |
 | `--bridge-dir` | (required) | Path to shared bridge directory |
 | `--allow-host` | `localhost,127.0.0.1,::1` | Allowed target hosts (comma-separated) |
+| `--secret` | off | Shared secret for AES-256-GCM encryption |
 | `--listen` | `127.0.0.1:8080` | Client listen address |
 | `--timeout` | `30.0` | Response timeout (seconds) |
 | `--verbose` | off | Debug logging |
@@ -175,6 +179,7 @@ See `bridge.toml.example` for the full format. CLI flags always override config 
 |------|---------|-------------|
 | `--bridge-dir` | (required) | Path to shared bridge directory |
 | `--allow-host` | `localhost,127.0.0.1,::1` | Allowed destination hosts (comma-separated) |
+| `--secret` | off | Shared secret for AES-256-GCM encryption |
 | `--listen` | `127.0.0.1:1080` | SOCKS5 listen address |
 | `--verbose` | off | Debug logging |
 
@@ -216,7 +221,22 @@ virtio-bridge is designed for **trusted VM↔host communication** on a single ma
 - Use `--allow-host` to restrict destinations to only the hosts you need (default: localhost only)
 - Don't pass sensitive credentials in HTTP headers if other VMs share the same filesystem
 - On shared machines, ensure other users cannot write to your bridge directory
-- For production use with sensitive data, consider running behind an additional encryption layer
+- Use `--secret` to encrypt all data on disk with AES-256-GCM when handling sensitive data
+- For maximum security, combine `--secret` with `--allow-host` and restrictive filesystem permissions
+
+### Encryption
+
+When `--secret` is set, all request/response files and streaming data are encrypted with AES-256-GCM. The key is derived from the shared secret via PBKDF2-HMAC-SHA256 (100,000 iterations). Both sides must use the same secret.
+
+```bash
+# Host
+virtio-bridge server --target http://localhost:11434 --bridge-dir ~/.bridge --secret "my-strong-passphrase"
+
+# VM
+virtio-bridge client --listen 127.0.0.1:11434 --bridge-dir /mnt/shared/.bridge --secret "my-strong-passphrase"
+```
+
+Encrypted files use `.enc` extension instead of `.json`. Each file/chunk has a unique random nonce, preventing replay attacks. Requires `pip install virtio-bridge[crypto]`
 
 ## Testing
 
@@ -281,9 +301,11 @@ This tool was born from investigating [Cowork VM's networking restrictions](http
 
 ## Roadmap
 
-- **v1**: HTTP relay with streaming support
-- **v2 (current)**: Generic TCP relay (SOCKS5 proxy mode) for SSH, databases, etc.
-- **v3**: TUN/TAP for full VPN-over-filesystem (experimental)
+- **v0.1**: HTTP relay with streaming support
+- **v0.2**: Generic TCP relay (SOCKS5 proxy mode) for SSH, databases, etc.
+- **v0.3**: Host allowlisting (`--allow-host`), config file support
+- **v0.4 (current)**: AES-256-GCM encryption (`--secret`)
+- **v0.5**: TUN/TAP for full VPN-over-filesystem (experimental)
 
 ## License
 
