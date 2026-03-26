@@ -7,20 +7,28 @@
 target = "http://localhost:11434"
 bridge_dir = "~/.bridge"
 allow_host = "localhost,127.0.0.1,::1"
+# auto_encrypt = true    # Zero-config DH encryption (recommended)
+# secret = "my-secret"   # Or use a shared passphrase (mutually exclusive with auto_encrypt)
 verbose = false
 
 [client]
 listen = "127.0.0.1:11434"
 bridge_dir = "~/.bridge"
 timeout = 30.0
+# auto_encrypt = true
+# secret = "my-secret"
 verbose = false
 
 [socks]
 listen = "127.0.0.1:1080"
 bridge_dir = "~/.bridge"
+# auto_encrypt = true
+# secret = "my-secret"
 verbose = false
 
 [tcp-relay]
 bridge_dir = "~/.bridge"
 allow_host = "localhost,127.0.0.1,::1"
+# auto_encrypt = true
+# secret = "my-secret"
 verbose = false

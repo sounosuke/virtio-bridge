@@ -363,6 +363,121 @@ def run_integration_test() -> bool:
         enc_client.stop()
         enc_server.stop()
         enc_echo_srv.shutdown()
+
+        # ------------------------------------------------------------------
+        # 6. DH auto-encrypt mode: zero-config encryption
+        # ------------------------------------------------------------------
+        print("\nDH auto-encrypt mode:")
+        dh_tmpdir = tempfile.mkdtemp(prefix="virtio-bridge-dh-test-")
+        dh_bridge_dir = str(Path(dh_tmpdir) / ".bridge")
+
+        from virtio_bridge.crypto import DHKeyExchange
+
+        dh_echo_port = _find_free_port()
+        dh_echo_srv = HTTPServer(("127.0.0.1", dh_echo_port), _EchoHandler)
+        threading.Thread(target=dh_echo_srv.serve_forever, daemon=True).start()
+
+        # DH negotiation: host side first, then vm side in threads
+        dh_host = DHKeyExchange(dh_bridge_dir, role="host")
+        dh_vm = DHKeyExchange(dh_bridge_dir, role="vm")
+
+        # Run both negotiations concurrently (they block waiting for each other)
+        dh_results = {}
+
+        def _dh_negotiate(dh_obj, name):
+            try:
+                dh_results[name] = dh_obj.negotiate(timeout=10)
+            except Exception as e:
+                dh_results[name] = e
+
+        t_host = threading.Thread(target=_dh_negotiate, args=(dh_host, "host"))
+        t_vm = threading.Thread(target=_dh_negotiate, args=(dh_vm, "vm"))
+        t_host.start()
+        t_vm.start()
+        t_host.join(timeout=15)
+        t_vm.join(timeout=15)
+
+        # Test H: DH key exchange succeeds
+        try:
+            host_crypto = dh_results["host"]
+            vm_crypto = dh_results["vm"]
+            assert not isinstance(host_crypto, Exception), f"Host DH failed: {host_crypto}"
+            assert not isinstance(vm_crypto, Exception), f"VM DH failed: {vm_crypto}"
+            # Both should produce the same encryption (verify by cross-encrypt/decrypt)
+            test_data = b"dh-test-payload-12345"
+            encrypted_by_host = host_crypto.encrypt(test_data)
+            decrypted_by_vm = vm_crypto.decrypt(encrypted_by_host)
+            assert decrypted_by_vm == test_data, "VM failed to decrypt host's data"
+            encrypted_by_vm = vm_crypto.encrypt(test_data)
+            decrypted_by_host = host_crypto.decrypt(encrypted_by_vm)
+            assert decrypted_by_host == test_data, "Host failed to decrypt VM's data"
+            _print("DH key exchange → shared secret matches")
+            passed += 1
+        except Exception as e:
+            _print(f"DH key exchange → {e}", ok=False)
+            failed += 1
+
+        # Test I: DH HTTP GET end-to-end
+        try:
+            host_crypto = dh_results.get("host")
+            vm_crypto = dh_results.get("vm")
+            assert not isinstance(host_crypto, Exception)
+            assert not isinstance(vm_crypto, Exception)
+
+            dh_server = BridgeServer(
+                bridge_dir=dh_bridge_dir,
+                target=f"http://127.0.0.1:{dh_echo_port}",
+                crypto=host_crypto,
+            )
+            threading.Thread(target=dh_server.start, daemon=True).start()
+            time.sleep(0.3)
+
+            dh_client_port = _find_free_port()
+            dh_client = BridgeClient(
+                bridge_dir=dh_bridge_dir,
+                listen_host="127.0.0.1",
+                listen_port=dh_client_port,
+                timeout=10.0,
+                crypto=vm_crypto,
+            )
+            threading.Thread(target=dh_client.start, daemon=True).start()
+            time.sleep(0.3)
+
+            url = f"http://127.0.0.1:{dh_client_port}/v1/models"
+            with urllib.request.urlopen(url, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+            assert data["method"] == "GET"
+            assert data["path"] == "/v1/models"
+            _print("GET /v1/models (DH encrypted) → 200 OK")
+            passed += 1
+
+            dh_client.stop()
+            dh_server.stop()
+        except Exception as e:
+            _print(f"GET /v1/models (DH encrypted) → {e}", ok=False)
+            failed += 1
+
+        # Test J: DH keys are public-only on disk (no private key leakage)
+        try:
+            keys_dir = Path(dh_bridge_dir) / ".keys"
+            host_pub = keys_dir / "host.pub"
+            vm_pub = keys_dir / "vm.pub"
+            assert host_pub.exists(), "host.pub not found"
+            assert vm_pub.exists(), "vm.pub not found"
+            assert len(host_pub.read_bytes()) == 32, "host.pub should be 32 bytes"
+            assert len(vm_pub.read_bytes()) == 32, "vm.pub should be 32 bytes"
+            # Verify no other key files exist
+            key_files = list(keys_dir.iterdir())
+            actual_files = [f.name for f in key_files if not f.name.endswith(".tmp")]
+            assert sorted(actual_files) == ["host.pub", "vm.pub"], \
+                f"Unexpected files in .keys/: {actual_files}"
+            _print("Only public keys on disk (32 bytes each, no private keys)")
+            passed += 1
+        except Exception as e:
+            _print(f"Key file verification → {e}", ok=False)
+            failed += 1
+
+        dh_echo_srv.shutdown()
     else:
         print("\nEncrypted mode: SKIPPED (cryptography package not installed)")
 

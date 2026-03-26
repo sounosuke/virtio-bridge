@@ -49,6 +49,9 @@ _KEY_MAP = {
     "verbose": "verbose",
     "max_age": "max_age",
     "max-age": "max_age",
+    "secret": "secret",
+    "auto_encrypt": "auto_encrypt",
+    "auto-encrypt": "auto_encrypt",
 }
 
 

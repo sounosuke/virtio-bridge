@@ -42,6 +42,36 @@ def _make_crypto(secret: str | None):
     return BridgeCrypto(secret)
 
 
+def _negotiate_dh(bridge_dir: str, role: str, timeout: float = 30.0):
+    """Run DH key exchange. Returns BridgeCrypto on success."""
+    from .crypto import DHKeyExchange
+    dh = DHKeyExchange(bridge_dir, role=role)
+    logger_dh = logging.getLogger("virtio-bridge")
+    logger_dh.info(f"DH key exchange: waiting for peer ({role} side)...")
+    crypto = dh.negotiate(timeout=timeout)
+    return crypto, dh
+
+
+def _resolve_crypto(args, role: str):
+    """Resolve encryption mode from CLI args. Returns (crypto, dh) tuple.
+
+    --secret and --auto-encrypt are mutually exclusive.
+    Returns (None, None) if neither is set.
+    """
+    secret = getattr(args, "secret", None)
+    auto_encrypt = getattr(args, "auto_encrypt", False)
+
+    if secret and auto_encrypt:
+        print("Error: --secret and --auto-encrypt are mutually exclusive.", file=sys.stderr)
+        sys.exit(1)
+
+    if secret:
+        return _make_crypto(secret), None
+    if auto_encrypt:
+        return _negotiate_dh(args.bridge_dir, role=role)
+    return None, None
+
+
 def _apply_config_if_present(args: argparse.Namespace, section: str, defaults: dict) -> None:
     """Load and apply config file if --config was specified."""
     config_path = getattr(args, "config", None)
@@ -69,7 +99,7 @@ def cmd_server(args: argparse.Namespace) -> None:
     })
     setup_logging(args.verbose)
     allow_hosts = parse_allow_hosts(args.allow_host)
-    crypto = _make_crypto(getattr(args, "secret", None))
+    crypto, dh = _resolve_crypto(args, role="host")
     run_server(
         bridge_dir=args.bridge_dir,
         target=args.target,
@@ -88,7 +118,7 @@ def cmd_client(args: argparse.Namespace) -> None:
     setup_logging(args.verbose)
 
     host, port = _parse_listen(args.listen)
-    crypto = _make_crypto(getattr(args, "secret", None))
+    crypto, dh = _resolve_crypto(args, role="vm")
     run_client(
         bridge_dir=args.bridge_dir,
         listen_host=host,
@@ -150,7 +180,7 @@ def cmd_socks(args: argparse.Namespace) -> None:
     setup_logging(args.verbose)
 
     host, port = _parse_listen(args.listen)
-    crypto = _make_crypto(getattr(args, "secret", None))
+    crypto, dh = _resolve_crypto(args, role="vm")
     run_socks(
         bridge_dir=args.bridge_dir,
         listen_host=host,
@@ -167,7 +197,7 @@ def cmd_tcp_relay(args: argparse.Namespace) -> None:
     })
     setup_logging(args.verbose)
     allow_hosts = parse_allow_hosts(args.allow_host)
-    crypto = _make_crypto(getattr(args, "secret", None))
+    crypto, dh = _resolve_crypto(args, role="host")
     run_tcp_relay(bridge_dir=args.bridge_dir, allow_hosts=allow_hosts, crypto=crypto)
 
 
@@ -237,6 +267,14 @@ def main() -> None:
         default=None,
         help="Shared secret for AES-256-GCM encryption. Both sides must use the same secret.",
     )
+    p_server.add_argument(
+        "--auto-encrypt", "-e",
+        action="store_true",
+        default=False,
+        help="Enable zero-config encryption via X25519 DH key exchange. "
+             "No shared secret needed — keys are exchanged automatically via the bridge directory. "
+             "Mutually exclusive with --secret.",
+    )
     p_server.add_argument("--verbose", "-v", action="store_true")
     p_server.set_defaults(func=cmd_server)
 
@@ -266,6 +304,13 @@ def main() -> None:
         default=None,
         help="Shared secret for AES-256-GCM encryption. Must match the server's secret.",
     )
+    p_client.add_argument(
+        "--auto-encrypt", "-e",
+        action="store_true",
+        default=False,
+        help="Enable zero-config encryption via X25519 DH key exchange. "
+             "Mutually exclusive with --secret.",
+    )
     p_client.add_argument("--verbose", "-v", action="store_true")
     p_client.set_defaults(func=cmd_client)
 
@@ -289,6 +334,13 @@ def main() -> None:
         default=None,
         help="Shared secret for AES-256-GCM encryption. Must match the tcp-relay's secret.",
     )
+    p_socks.add_argument(
+        "--auto-encrypt", "-e",
+        action="store_true",
+        default=False,
+        help="Enable zero-config encryption via X25519 DH key exchange. "
+             "Mutually exclusive with --secret.",
+    )
     p_socks.add_argument("--verbose", "-v", action="store_true")
     p_socks.set_defaults(func=cmd_socks)
 
@@ -311,6 +363,13 @@ def main() -> None:
         "--secret", "-s",
         default=None,
         help="Shared secret for AES-256-GCM encryption. Must match the socks proxy's secret.",
+    )
+    p_tcp_relay.add_argument(
+        "--auto-encrypt", "-e",
+        action="store_true",
+        default=False,
+        help="Enable zero-config encryption via X25519 DH key exchange. "
+             "Mutually exclusive with --secret.",
     )
     p_tcp_relay.add_argument("--verbose", "-v", action="store_true")
     p_tcp_relay.set_defaults(func=cmd_tcp_relay)

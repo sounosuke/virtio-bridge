@@ -169,6 +169,7 @@ See `bridge.toml.example` for the full format. CLI flags always override config 
 | `--bridge-dir` | (required) | Path to shared bridge directory |
 | `--allow-host` | `localhost,127.0.0.1,::1` | Allowed target hosts (comma-separated) |
 | `--secret` | off | Shared secret for AES-256-GCM encryption |
+| `--auto-encrypt` | off | Zero-config encryption via X25519 DH key exchange |
 | `--listen` | `127.0.0.1:8080` | Client listen address |
 | `--timeout` | `30.0` | Response timeout (seconds) |
 | `--verbose` | off | Debug logging |
@@ -180,6 +181,7 @@ See `bridge.toml.example` for the full format. CLI flags always override config 
 | `--bridge-dir` | (required) | Path to shared bridge directory |
 | `--allow-host` | `localhost,127.0.0.1,::1` | Allowed destination hosts (comma-separated) |
 | `--secret` | off | Shared secret for AES-256-GCM encryption |
+| `--auto-encrypt` | off | Zero-config encryption via X25519 DH key exchange |
 | `--listen` | `127.0.0.1:1080` | SOCKS5 listen address |
 | `--verbose` | off | Debug logging |
 
@@ -221,12 +223,26 @@ virtio-bridge is designed for **trusted VM↔host communication** on a single ma
 - Use `--allow-host` to restrict destinations to only the hosts you need (default: localhost only)
 - Don't pass sensitive credentials in HTTP headers if other VMs share the same filesystem
 - On shared machines, ensure other users cannot write to your bridge directory
-- Use `--secret` to encrypt all data on disk with AES-256-GCM when handling sensitive data
-- For maximum security, combine `--secret` with `--allow-host` and restrictive filesystem permissions
+- Use `--auto-encrypt` or `--secret` to encrypt all data on disk with AES-256-GCM when handling sensitive data
+- For maximum security, combine encryption with `--allow-host` and restrictive filesystem permissions
 
 ### Encryption
 
-When `--secret` is set, all request/response files and streaming data are encrypted with AES-256-GCM. The key is derived from the shared secret via PBKDF2-HMAC-SHA256 (100,000 iterations). Both sides must use the same secret.
+Two encryption modes are available, both using AES-256-GCM. Requires `pip install virtio-bridge[crypto]`.
+
+**DH auto-encrypt (recommended):** Zero-config encryption using X25519 Diffie-Hellman key exchange. No passphrase to manage. Private keys exist only in process memory — only public keys are written to the bridge directory.
+
+```bash
+# Host
+virtio-bridge server --target http://localhost:11434 --bridge-dir ~/.bridge --auto-encrypt
+
+# VM
+virtio-bridge client --listen 127.0.0.1:11434 --bridge-dir /mnt/shared/.bridge --auto-encrypt
+```
+
+Each side writes its public key to `.bridge/.keys/` and reads the peer's. An attacker with read access to the bridge directory sees only the public keys, which are useless without the private keys (which never touch disk). This is stronger than `--secret`, where the passphrase must be stored in plaintext somewhere (config file, environment variable, etc.).
+
+**Passphrase mode:** Manual shared secret, both sides must use the same value.
 
 ```bash
 # Host
@@ -236,7 +252,9 @@ virtio-bridge server --target http://localhost:11434 --bridge-dir ~/.bridge --se
 virtio-bridge client --listen 127.0.0.1:11434 --bridge-dir /mnt/shared/.bridge --secret "my-strong-passphrase"
 ```
 
-Encrypted files use `.enc` extension instead of `.json`. Each file/chunk has a unique random nonce, preventing replay attacks. Requires `pip install virtio-bridge[crypto]`
+Key is derived via PBKDF2-HMAC-SHA256 (100,000 iterations). Useful when you need deterministic keys or can't install the cryptography package on one side.
+
+Both modes use `.enc` extension instead of `.json`. Each file/chunk has a unique random nonce, preventing replay attacks.
 
 ## Testing
 
@@ -250,7 +268,7 @@ cd virtio-bridge
 python3 -m virtio_bridge.cli integration-test
 ```
 
-This spins up echo servers, bridge server/client, SOCKS5 proxy, and TCP relay internally, then runs 4 end-to-end tests (HTTP GET, HTTP POST, SOCKS5 connect, SOCKS5 error handling).
+This spins up echo servers, bridge server/client, SOCKS5 proxy, and TCP relay internally, then runs 10 end-to-end tests (HTTP, SOCKS5, passphrase encryption, and DH auto-encryption).
 
 ### Unit Tests
 
@@ -304,8 +322,9 @@ This tool was born from investigating [Cowork VM's networking restrictions](http
 - **v0.1**: HTTP relay with streaming support
 - **v0.2**: Generic TCP relay (SOCKS5 proxy mode) for SSH, databases, etc.
 - **v0.3**: Host allowlisting (`--allow-host`), config file support
-- **v0.4 (current)**: AES-256-GCM encryption (`--secret`)
-- **v0.5**: TUN/TAP for full VPN-over-filesystem (experimental)
+- **v0.4**: AES-256-GCM encryption (`--secret`)
+- **v0.5 (current)**: Zero-config DH encryption (`--auto-encrypt`)
+- **v0.6**: TUN/TAP for full VPN-over-filesystem (experimental)
 
 ## License
 
