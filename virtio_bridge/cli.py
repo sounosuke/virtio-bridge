@@ -3,11 +3,15 @@ Command-line interface for virtio-bridge.
 
 Usage:
     # --- v1: HTTP relay ---
-    # Host side (Mac): watch shared dir and forward requests to localhost
+    # Host side (Mac): watch shared dir and forward to per-request targets
+    virtio-bridge server --bridge-dir /path/to/shared/.bridge
+
+    # Host side (Mac): with a default target (used when request has no target field)
     virtio-bridge server --target http://localhost:11434 --bridge-dir /path/to/shared/.bridge
 
     # VM side: start HTTP proxy that relays through filesystem
-    virtio-bridge client --listen 127.0.0.1:11434 --bridge-dir /path/to/shared/.bridge
+    virtio-bridge client --listen 127.0.0.1:11434 --target http://localhost:11434 --bridge-dir /path/to/shared/.bridge
+    virtio-bridge client --listen 127.0.0.1:11435 --target http://localhost:11435 --bridge-dir /path/to/shared/.bridge
 
     # --- v2: TCP relay (SOCKS5) ---
     # Host side (Mac): relay TCP connections to real targets
@@ -113,7 +117,7 @@ def cmd_client(args: argparse.Namespace) -> None:
     from .client import run_client
     _apply_config_if_present(args, "client", {
         "listen": "127.0.0.1:8080", "bridge_dir": None,
-        "timeout": DEFAULT_TIMEOUT, "verbose": False,
+        "target": None, "timeout": DEFAULT_TIMEOUT, "verbose": False,
     })
     setup_logging(args.verbose)
 
@@ -124,6 +128,7 @@ def cmd_client(args: argparse.Namespace) -> None:
         listen_host=host,
         listen_port=port,
         timeout=args.timeout,
+        target=args.target,
         crypto=crypto,
     )
 
@@ -249,8 +254,9 @@ def main() -> None:
     )
     p_server.add_argument(
         "--target", "-t",
-        required=True,
-        help="Target URL to forward requests to (e.g., http://localhost:11434)",
+        default=None,
+        help="Default target URL to forward requests to (e.g., http://localhost:11434). "
+             "Optional when clients specify --target (per-request routing).",
     )
     p_server.add_argument(
         "--bridge-dir", "-d",
@@ -287,6 +293,12 @@ def main() -> None:
         "--listen", "-l",
         default="127.0.0.1:8080",
         help="Listen address (host:port or just port). Default: 127.0.0.1:8080",
+    )
+    p_client.add_argument(
+        "--target", "-t",
+        default=None,
+        help="Target URL on the host side (e.g., http://localhost:11435). "
+             "Stamped into each request for per-request routing on the server.",
     )
     p_client.add_argument(
         "--bridge-dir", "-d",

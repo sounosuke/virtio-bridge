@@ -35,6 +35,7 @@ class BridgeProxyHandler(BaseHTTPRequestHandler):
     # Reference to the BridgeDirectory, set by BridgeClient
     bridge: BridgeDirectory
     target_host: str = "localhost"
+    target_url: Optional[str] = None  # Per-client target URL for multi-backend routing
     timeout: float = DEFAULT_TIMEOUT
 
     def do_GET(self):
@@ -97,6 +98,7 @@ class BridgeProxyHandler(BaseHTTPRequestHandler):
             headers=headers,
             body=body,
             stream=is_stream,
+            target=self.target_url,
         )
 
         logger.info(f"→ {method} {self.path} (id={req.id}, stream={is_stream})")
@@ -209,12 +211,14 @@ class BridgeClient:
         listen_host: str = "127.0.0.1",
         listen_port: int = 8080,
         timeout: float = DEFAULT_TIMEOUT,
+        target: str | None = None,
         crypto=None,
     ):
         self.bridge = BridgeDirectory(bridge_dir, crypto=crypto)
         self.listen_host = listen_host
         self.listen_port = listen_port
         self.timeout = timeout
+        self.target = target
         self._server: Optional[HTTPServer] = None
 
     def start(self) -> None:
@@ -228,6 +232,7 @@ class BridgeClient:
             {
                 "bridge": self.bridge,
                 "timeout": self.timeout,
+                "target_url": self.target,
             },
         )
 
@@ -236,8 +241,9 @@ class BridgeClient:
             handler,
         )
 
+        target_info = f" → {self.target}" if self.target else ""
         logger.info(
-            f"Client proxy started: http://{self.listen_host}:{self.listen_port}"
+            f"Client proxy started: http://{self.listen_host}:{self.listen_port}{target_info}"
         )
         logger.info(f"Bridge directory: {self.bridge.root}")
         logger.info(f"Applications can send requests to http://{self.listen_host}:{self.listen_port}")
@@ -261,6 +267,7 @@ def run_client(
     listen_host: str = "127.0.0.1",
     listen_port: int = 8080,
     timeout: float = DEFAULT_TIMEOUT,
+    target: str | None = None,
     crypto=None,
 ) -> None:
     """Entry point for running the client."""
@@ -269,6 +276,7 @@ def run_client(
         listen_host=listen_host,
         listen_port=listen_port,
         timeout=timeout,
+        target=target,
         crypto=crypto,
     )
 

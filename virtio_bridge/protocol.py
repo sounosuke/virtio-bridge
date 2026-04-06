@@ -51,6 +51,7 @@ class BridgeRequest:
     headers: Dict[str, str] = field(default_factory=dict)
     body: Optional[str] = None
     stream: bool = False
+    target: Optional[str] = None  # Override target URL (e.g., "http://localhost:11435")
     timestamp: float = 0.0
 
     def __post_init__(self):

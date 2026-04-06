@@ -47,25 +47,46 @@ class BridgeServer:
     """
     Host-side server that watches for request files and forwards them
     to a target HTTP server.
+
+    Supports per-request target routing: if a request includes a ``target``
+    field, that URL is used instead of the server's default.  This allows a
+    single server process to relay to multiple backends (e.g. LLM on :11434
+    and embedding on :11435).
     """
 
     def __init__(
         self,
         bridge_dir: str | Path,
-        target: str = "http://localhost:8080",
+        target: str | None = None,
         workers: int = 4,
         allow_hosts: frozenset[str] | None = None,
         crypto=None,
     ):
         self.bridge = BridgeDirectory(bridge_dir, crypto=crypto)
-        self.target = target.rstrip("/")
+        self.target = target.rstrip("/") if target else None
         self.workers = workers
         self.allow_hosts = allow_hosts or LOCAL_HOSTS
         self._running = False
         self._watcher: Optional[FileWatcher] = None
 
-        # Validate target against allow list at startup
-        validate_target_url(self.target, self.allow_hosts)
+        # Validate default target against allow list at startup (if given)
+        if self.target:
+            validate_target_url(self.target, self.allow_hosts)
+
+    def _resolve_target(self, req: BridgeRequest) -> str:
+        """Resolve the target URL for a request.
+
+        Priority: req.target > self.target.
+        Raises ValueError if no target is available or the host is not allowed.
+        """
+        target = req.target or self.target
+        if not target:
+            raise ValueError(
+                "No target URL: request has no 'target' field and server has no --target default"
+            )
+        target = target.rstrip("/")
+        validate_target_url(target, self.allow_hosts)
+        return target
 
     def start(self) -> None:
         """Start the server. Blocks until stopped."""
@@ -83,7 +104,10 @@ class BridgeServer:
         watch_pattern = "*.enc" if self.bridge.crypto else "*.json"
         self._watcher = FileWatcher.create(self.bridge.requests_dir, pattern=watch_pattern)
 
-        logger.info(f"Server started: {self.bridge.root} → {self.target}")
+        if self.target:
+            logger.info(f"Server started: {self.bridge.root} → {self.target} (default)")
+        else:
+            logger.info(f"Server started: {self.bridge.root} (no default target, per-request routing)")
         logger.info(f"Watching for requests in: {self.bridge.requests_dir}")
 
         try:
@@ -141,14 +165,27 @@ class BridgeServer:
             self.bridge.write_response(error_resp)
             return
 
-        logger.info(f"→ {req.method} {req.path} (id={req_id}, stream={req.stream})")
+        # Resolve target URL (per-request override or default)
+        try:
+            target = self._resolve_target(req)
+        except ValueError as e:
+            logger.warning(f"Rejected request {req_id}: {e}")
+            error_resp = BridgeResponse(
+                id=req_id,
+                status=400,
+                error=str(e),
+            )
+            self.bridge.write_response(error_resp)
+            return
+
+        logger.info(f"→ {req.method} {target}{req.path} (id={req_id}, stream={req.stream})")
         start = time.time()
 
         try:
             if req.stream:
-                self._handle_streaming_request(req)
+                self._handle_streaming_request(req, target)
             else:
-                self._handle_regular_request(req)
+                self._handle_regular_request(req, target)
         except Exception as e:
             logger.error(f"Error handling {req_id}: {e}")
             error_resp = BridgeResponse(
@@ -161,9 +198,9 @@ class BridgeServer:
         elapsed = time.time() - start
         logger.info(f"← {req_id} ({elapsed:.2f}s)")
 
-    def _handle_regular_request(self, req: BridgeRequest) -> None:
+    def _handle_regular_request(self, req: BridgeRequest, target: str) -> None:
         """Forward a regular (non-streaming) HTTP request."""
-        url = f"{self.target}{req.path}"
+        url = f"{target}{req.path}"
         body = req.body.encode("utf-8") if req.body else None
 
         http_req = urllib.request.Request(
@@ -201,9 +238,9 @@ class BridgeServer:
 
         self.bridge.write_response(resp)
 
-    def _handle_streaming_request(self, req: BridgeRequest) -> None:
+    def _handle_streaming_request(self, req: BridgeRequest, target: str) -> None:
         """Forward a streaming HTTP request, relaying chunks via filesystem."""
-        url = f"{self.target}{req.path}"
+        url = f"{target}{req.path}"
         body = req.body.encode("utf-8") if req.body else None
 
         http_req = urllib.request.Request(
@@ -255,7 +292,7 @@ class BridgeServer:
 
 def run_server(
     bridge_dir: str,
-    target: str = "http://localhost:8080",
+    target: str | None = None,
     allow_hosts: frozenset[str] | None = None,
     crypto=None,
 ) -> None:
