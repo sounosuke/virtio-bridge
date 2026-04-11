@@ -206,6 +206,30 @@ def cmd_tcp_relay(args: argparse.Namespace) -> None:
     run_tcp_relay(bridge_dir=args.bridge_dir, allow_hosts=allow_hosts, crypto=crypto)
 
 
+def cmd_direct(args: argparse.Namespace) -> None:
+    """Send a single request through the bridge (no listener)."""
+    from .direct import run_direct
+    setup_logging(args.verbose)
+    crypto = _make_crypto(getattr(args, "secret", None))
+
+    # Support @filename for body
+    body = args.body
+    if body and body.startswith("@"):
+        with open(body[1:], "r") as f:
+            body = f.read()
+
+    run_direct(
+        bridge_dir=args.bridge_dir,
+        method=args.method,
+        path=args.path,
+        body=body,
+        target=args.target,
+        timeout=args.timeout,
+        stream=args.stream,
+        crypto=crypto,
+    )
+
+
 def cmd_integration_test(args: argparse.Namespace) -> None:
     """Run self-contained integration tests."""
     setup_logging(args.verbose)
@@ -412,6 +436,54 @@ def main() -> None:
     )
     p_integ.add_argument("--verbose", "-v", action="store_true")
     p_integ.set_defaults(func=cmd_integration_test)
+
+    # --- direct (no-listen client) ---
+    p_direct = subparsers.add_parser(
+        "direct",
+        help="Send a single request through the bridge (no listener, no proxy server)",
+    )
+    p_direct.add_argument(
+        "method",
+        help="HTTP method (GET, POST, etc.)",
+    )
+    p_direct.add_argument(
+        "path",
+        help="Request path (e.g., /memory/generate)",
+    )
+    p_direct.add_argument(
+        "--body", "-b",
+        default=None,
+        help="Request body (JSON string or @filename)",
+    )
+    p_direct.add_argument(
+        "--target", "-t",
+        default=None,
+        help="Target URL on the host side (e.g., http://localhost:11436)",
+    )
+    p_direct.add_argument(
+        "--bridge-dir", "-d",
+        required=True,
+        help="Path to the shared bridge directory",
+    )
+    p_direct.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT,
+        help=f"Response timeout in seconds. Default: {DEFAULT_TIMEOUT}",
+    )
+    p_direct.add_argument(
+        "--stream",
+        action="store_true",
+        default=False,
+        help="Request streaming response",
+    )
+    p_direct.add_argument(
+        "--secret", "-s",
+        default=None,
+        help="Shared secret for AES-256-GCM encryption.",
+    )
+    p_direct.add_argument("--verbose", "-v", action="store_true")
+    p_direct.set_defaults(func=cmd_direct)
 
     # --- cleanup ---
     p_cleanup = subparsers.add_parser(
