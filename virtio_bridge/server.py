@@ -228,16 +228,24 @@ class BridgeServer:
         return self._exec_policy
 
     def _handle_exec(self, req_id: str) -> None:
-        """Handle a command execution request."""
+        """Handle a predefined action execution request.
+
+        The client sends an action name + parameters.  The server resolves
+        the action via the policy (which defines the command template),
+        validates parameters, builds the command, and executes it.
+
+        The client never constructs commands — only the policy defines
+        what commands exist and how they are built.
+        """
         exec_req = self.bridge.consume_exec_request(req_id)
         if exec_req is None:
             logger.warning(f"Exec request {req_id} disappeared before processing")
             return
 
-        cmd = exec_req.cmd
-        args = exec_req.args
+        action = exec_req.action
+        params = exec_req.params
         cwd = exec_req.cwd
-        logger.info(f"EXEC → {cmd} {' '.join(args)} in {cwd} (id={req_id})")
+        logger.info(f"EXEC → action={action} params={params} cwd={cwd} (id={req_id})")
         start = time.time()
 
         # Resolve and validate cwd
@@ -253,49 +261,45 @@ class BridgeServer:
             self.bridge.write_exec_response(resp)
             return
 
-        # Check exec policy
+        # Resolve action via policy → command list
         try:
             policy = self._get_exec_policy()
-            level = policy.check(cmd, args, resolved_cwd)
+            cmd_list, level, template = policy.resolve(action, params, resolved_cwd)
         except FileNotFoundError as e:
             resp = ExecResponse(id=req_id, error=str(e))
             self.bridge.write_exec_response(resp)
+            return
+        except ValueError as e:
+            logger.warning(f"EXEC DENIED: {e}")
+            resp = ExecResponse(id=req_id, error=str(e))
+            self.bridge.write_exec_response(resp)
+            elapsed = time.time() - start
+            logger.info(f"EXEC ← {req_id} DENIED ({elapsed:.2f}s)")
             return
         except Exception as e:
             resp = ExecResponse(id=req_id, error=f"Policy error: {e}")
             self.bridge.write_exec_response(resp)
             return
 
-        if level == "deny":
-            logger.warning(f"EXEC DENIED by policy: {cmd} {args} in {resolved_cwd}")
-            resp = ExecResponse(id=req_id, error=f"Denied by policy: {cmd} {' '.join(args)}")
-            self.bridge.write_exec_response(resp)
-            elapsed = time.time() - start
-            logger.info(f"EXEC ← {req_id} DENIED ({elapsed:.2f}s)")
-            return
+        cmd_display = " ".join(cmd_list)
+        logger.info(f"EXEC resolved: {cmd_display} in {resolved_cwd} (level={level})")
 
         if level == "confirm":
-            # Single Source of Truth: same cmd/args/cwd goes to display AND execution
-            approved = osascript_confirm(cmd, args, resolved_cwd)
+            # Single Source of Truth: same cmd_list goes to display AND execution
+            approved = osascript_confirm(cmd_list, resolved_cwd, template.description)
             if not approved:
-                logger.info(f"EXEC REJECTED by user: {cmd} {args}")
-                resp = ExecResponse(id=req_id, error=f"Rejected by user: {cmd} {' '.join(args)}")
+                logger.info(f"EXEC REJECTED by user: {cmd_display}")
+                resp = ExecResponse(id=req_id, error=f"Rejected by user: {cmd_display}")
                 self.bridge.write_exec_response(resp)
                 elapsed = time.time() - start
                 logger.info(f"EXEC ← {req_id} REJECTED ({elapsed:.2f}s)")
                 return
 
-        # Execute the command
+        # Execute the command (shell=False, no shell expansion)
         try:
-            # Build env (inherit + optional extras)
-            env = os.environ.copy()
-            if exec_req.env:
-                env.update(exec_req.env)
-
             result = subprocess.run(
-                [cmd] + args,
+                cmd_list,
                 cwd=resolved_cwd,
-                env=env,
                 capture_output=True,
                 text=True,
                 timeout=exec_req.timeout,
@@ -310,15 +314,16 @@ class BridgeServer:
         except subprocess.TimeoutExpired:
             resp = ExecResponse(id=req_id, error=f"Command timed out after {exec_req.timeout}s")
         except FileNotFoundError:
-            resp = ExecResponse(id=req_id, error=f"Command not found: {cmd}")
+            resp = ExecResponse(id=req_id, error=f"Command not found: {cmd_list[0]}")
         except PermissionError:
-            resp = ExecResponse(id=req_id, error=f"Permission denied: {cmd}")
+            resp = ExecResponse(id=req_id, error=f"Permission denied: {cmd_list[0]}")
         except Exception as e:
             resp = ExecResponse(id=req_id, error=f"Execution error: {e}")
 
         self.bridge.write_exec_response(resp)
         elapsed = time.time() - start
-        logger.info(f"EXEC ← {req_id} exit={resp.exit_code} ({elapsed:.2f}s)")
+        exit_code = resp.exit_code if resp.error is None else "ERR"
+        logger.info(f"EXEC ← {req_id} exit={exit_code} ({elapsed:.2f}s)")
 
     def _handle_regular_request(self, req: BridgeRequest, target: str) -> None:
         """Forward a regular (non-streaming) HTTP request."""

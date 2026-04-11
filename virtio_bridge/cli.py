@@ -233,20 +233,25 @@ def cmd_direct(args: argparse.Namespace) -> None:
 
 
 def cmd_exec(args: argparse.Namespace) -> None:
-    """Execute a command on the host side via the bridge."""
+    """Execute a predefined action on the host side via the bridge."""
     from .direct import run_exec
     setup_logging(args.verbose)
     crypto = _make_crypto(getattr(args, "secret", None))
 
-    # Strip leading "--" that argparse.REMAINDER may include
-    exec_args = args.args or []
-    if exec_args and exec_args[0] == "--":
-        exec_args = exec_args[1:]
+    # Parse --param key=value pairs into a dict
+    params = {}
+    if args.param:
+        for p in args.param:
+            if "=" not in p:
+                print(f"Error: --param must be key=value, got: {p}", file=sys.stderr)
+                sys.exit(1)
+            k, v = p.split("=", 1)
+            params[k] = v
 
     run_exec(
         bridge_dir=args.bridge_dir,
-        cmd=args.cmd,
-        args=exec_args,
+        action=args.action,
+        params=params,
         cwd=args.cwd,
         timeout=args.timeout,
         crypto=crypto,
@@ -514,21 +519,20 @@ def main() -> None:
     p_direct.add_argument("--verbose", "-v", action="store_true")
     p_direct.set_defaults(func=cmd_direct)
 
-    # --- exec (remote command execution) ---
+    # --- exec (predefined action execution) ---
     p_exec = subparsers.add_parser(
         "exec",
-        help="Execute a command on the host (Mac) side through the bridge. "
-             "Subject to the host's exec policy (allow/confirm/deny).",
+        help="Execute a predefined action on the host (Mac) side through the bridge. "
+             "Actions are defined in the host's exec policy (allow/confirm/deny).",
     )
     p_exec.add_argument(
-        "cmd",
-        help="Command to execute (e.g., git, rm)",
+        "action",
+        help="Predefined action name (e.g., git_status, git_commit)",
     )
     p_exec.add_argument(
-        "args",
-        nargs=argparse.REMAINDER,
-        help="Command arguments (e.g., commit -m 'message'). "
-             "Use -- before the command if args start with dashes.",
+        "--param", "-p",
+        action="append",
+        help="Action parameter as key=value (repeatable, e.g., -p message='Add files')",
     )
     p_exec.add_argument(
         "--cwd",

@@ -1,51 +1,48 @@
 """
-Exec policy — controls which commands the bridge server may execute.
+Exec policy — Predefined Actions with template-based command construction.
 
-The policy file lives on the Mac side (NOT in the bridge directory) so
-that VM-side clients cannot modify it.
+Security model:
+  - The client can ONLY request predefined action names + parameters.
+  - The client CANNOT construct arbitrary commands.
+  - The server expands action templates into commands using parameters.
+  - The policy file lives on the Mac side (NOT in the bridge directory).
+  - Only the human can add/modify action definitions.
 
 Default location: ~/.config/virtio-bridge/exec-policy.json
 
 Policy format:
 {
-  "policies": [
-    {
-      "cmd": "git",
-      "args_pattern": ["status", "log", "diff"],
+  "actions": {
+    "git_status": {
+      "cmd": ["git", "status"],
       "level": "allow",
       "working_dirs": ["~/Documents/buddy-*"]
     },
-    {
-      "cmd": "git",
-      "args_pattern": ["commit", "push", "add"],
-      "level": "confirm",
-      "working_dirs": ["~/Documents/buddy-*"]
+    "git_commit": {
+      "cmd": ["git", "commit", "-m", "{message}"],
+      "level": "allow",
+      "working_dirs": ["~/Documents/buddy-*"],
+      "params": {
+        "message": {"type": "string", "max_length": 500}
+      }
     }
-  ],
-  "default": "deny"
+  }
 }
 
 Levels:
   - allow:   Execute without asking.
   - confirm: Show macOS dialog (osascript) and wait for human approval.
-  - deny:    Reject immediately.
+  - deny:    Reject immediately (useful to explicitly block an action).
 """
 
-import fnmatch
 import json
 import logging
-import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("virtio-bridge.exec-policy")
-
-# Single Source of Truth: the same data flows to display AND execution.
-# There is NO separate "display_message" field in exec requests.
-# The server renders the confirm dialog from the same cmd+args+cwd
-# that it will pass to subprocess.run().
 
 DEFAULT_POLICY_PATH = Path.home() / ".config" / "virtio-bridge" / "exec-policy.json"
 
@@ -53,69 +50,106 @@ VALID_LEVELS = {"allow", "confirm", "deny"}
 
 
 @dataclass
-class PolicyRule:
-    """A single rule in the exec policy."""
-    cmd: str
-    args_pattern: List[str] = field(default_factory=list)
-    level: str = "deny"
+class ActionTemplate:
+    """A predefined action that the server knows how to execute."""
+    name: str
+    cmd: List[str]  # Command template, e.g. ["git", "commit", "-m", "{message}"]
+    level: str = "allow"
     working_dirs: List[str] = field(default_factory=list)
+    params: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    description: str = ""  # Human-readable description for confirm dialog
 
-    def matches_cmd(self, cmd: str) -> bool:
-        return self.cmd == cmd
+    def validate_params(self, provided: Dict[str, str]) -> Optional[str]:
+        """Validate provided parameters against the template spec.
 
-    def matches_args(self, args: List[str]) -> bool:
-        """Check if the command's subcommand matches the allowed patterns.
-
-        The first positional (non-flag) argument is treated as the subcommand
-        and must match at least one pattern.  Subsequent args (flags, values,
-        commit messages) are not restricted — the security boundary is
-        cmd + subcommand + working_dir, not free-text values.
+        Returns None on success, or an error message string.
         """
-        if not self.args_pattern:
-            # No pattern restriction = matches any args
-            return True
-        if not args:
-            # No args provided but patterns exist — no match
-            return False
-        # Find the first positional arg (subcommand)
-        for arg in args:
-            if not arg.startswith("-"):
-                return any(fnmatch.fnmatch(arg, p) for p in self.args_pattern)
-        # All args are flags — check if any flag matches a pattern
-        return any(
-            any(fnmatch.fnmatch(a, p) for p in self.args_pattern)
-            for a in args
-        )
+        # Check for required params (any param in cmd template is required)
+        for part in self.cmd:
+            if part.startswith("{") and part.endswith("}"):
+                param_name = part[1:-1]
+                if param_name not in provided:
+                    return f"Missing required parameter: {param_name}"
+
+        # Validate each provided param
+        for name, value in provided.items():
+            if name not in self.params and not self._is_template_param(name):
+                return f"Unknown parameter: {name}"
+
+            spec = self.params.get(name, {})
+
+            # Type check
+            expected_type = spec.get("type", "string")
+            if expected_type == "string" and not isinstance(value, str):
+                return f"Parameter {name} must be a string"
+
+            # Length check
+            max_length = spec.get("max_length")
+            if max_length and isinstance(value, str) and len(value) > max_length:
+                return f"Parameter {name} exceeds max_length ({max_length})"
+
+            # Enum check
+            allowed_values = spec.get("enum")
+            if allowed_values and value not in allowed_values:
+                return f"Parameter {name} must be one of: {allowed_values}"
+
+        return None
+
+    def _is_template_param(self, name: str) -> bool:
+        """Check if a param name appears in the cmd template."""
+        return f"{{{name}}}" in " ".join(self.cmd)
+
+    def build_command(self, params: Dict[str, str]) -> List[str]:
+        """Expand the command template with provided parameters.
+
+        Returns a list of strings ready for subprocess.run().
+        No shell expansion — parameters are inserted as literal values.
+
+        If a parameter spec has ``"split": true``, the value is split by
+        whitespace and inserted as multiple arguments.  This is useful for
+        commands like ``git add {paths}`` where paths is "file1 file2".
+        """
+        result = []
+        for part in self.cmd:
+            if part.startswith("{") and part.endswith("}"):
+                param_name = part[1:-1]
+                value = params[param_name]
+                spec = self.params.get(param_name, {})
+                if spec.get("split"):
+                    result.extend(value.split())
+                else:
+                    result.append(value)
+            else:
+                result.append(part)
+        return result
 
     def matches_cwd(self, cwd: str) -> bool:
         """Check if cwd falls within allowed working directories."""
         if not self.working_dirs:
             return True
-        resolved = Path(cwd).expanduser().resolve()
+        resolved = str(Path(cwd).expanduser().resolve())
         for pattern in self.working_dirs:
-            expanded = Path(pattern).expanduser().resolve()
-            pattern_str = str(expanded)
-            # Support glob patterns in directory paths
-            if fnmatch.fnmatch(str(resolved), pattern_str):
+            import fnmatch
+            expanded = str(Path(pattern).expanduser().resolve())
+            if fnmatch.fnmatch(resolved, expanded):
                 return True
-            # Also check if resolved is under the pattern directory
-            if "*" not in pattern_str and str(resolved).startswith(pattern_str):
+            if "*" not in expanded and resolved.startswith(expanded):
                 return True
         return False
 
 
 class ExecPolicy:
     """
-    Loads and evaluates exec policy from a JSON file on the Mac side.
+    Predefined Actions policy loader.
 
-    The policy file MUST NOT be in the bridge directory (which is
-    writable from the VM).  Default: ~/.config/virtio-bridge/exec-policy.json
+    The client sends an action name + parameters. The server looks up the
+    action in the policy, validates parameters, builds the command from
+    the template, and executes it. The client never constructs commands.
     """
 
     def __init__(self, policy_path: Optional[str | Path] = None):
         self.policy_path = Path(policy_path) if policy_path else DEFAULT_POLICY_PATH
-        self.rules: List[PolicyRule] = []
-        self.default_level: str = "deny"
+        self.actions: Dict[str, ActionTemplate] = {}
         self._loaded = False
 
     def load(self) -> None:
@@ -127,7 +161,6 @@ class ExecPolicy:
                 f"Without a policy file, all exec requests are denied."
             )
 
-        # Security: reject if the policy file is a symlink
         if self.policy_path.is_symlink():
             raise PermissionError(
                 f"Exec policy file is a symlink (rejected for security): {self.policy_path}"
@@ -136,69 +169,109 @@ class ExecPolicy:
         with open(self.policy_path) as f:
             data = json.load(f)
 
-        self.default_level = data.get("default", "deny")
-        if self.default_level not in VALID_LEVELS:
-            raise ValueError(f"Invalid default level: {self.default_level}")
-
-        self.rules = []
-        for rule_data in data.get("policies", []):
-            level = rule_data.get("level", "deny")
+        self.actions = {}
+        for name, action_data in data.get("actions", {}).items():
+            level = action_data.get("level", "allow")
             if level not in VALID_LEVELS:
-                raise ValueError(f"Invalid level in policy rule: {level}")
-            self.rules.append(PolicyRule(
-                cmd=rule_data["cmd"],
-                args_pattern=rule_data.get("args_pattern", []),
+                raise ValueError(f"Invalid level for action '{name}': {level}")
+
+            cmd = action_data.get("cmd", [])
+            if not cmd:
+                raise ValueError(f"Action '{name}' has no cmd")
+
+            self.actions[name] = ActionTemplate(
+                name=name,
+                cmd=cmd,
                 level=level,
-                working_dirs=rule_data.get("working_dirs", []),
-            ))
+                working_dirs=action_data.get("working_dirs", []),
+                params=action_data.get("params", {}),
+                description=action_data.get("description", ""),
+            )
 
         self._loaded = True
-        logger.info(f"Loaded exec policy: {len(self.rules)} rules from {self.policy_path}")
+        logger.info(
+            f"Loaded exec policy: {len(self.actions)} actions from {self.policy_path}"
+        )
 
-    def check(self, cmd: str, args: List[str], cwd: str) -> str:
+    def resolve(self, action: str, params: Dict[str, str], cwd: str):
         """
-        Evaluate a command against the policy.
+        Resolve an action request into a validated, ready-to-execute command.
 
-        Returns: "allow", "confirm", or "deny"
+        Returns: (cmd_list, level, action_template) on success.
+        Raises ValueError on validation failure.
         """
         if not self._loaded:
             self.load()
 
-        # Path traversal defense: resolve cwd to absolute path
+        # Action must exist
+        template = self.actions.get(action)
+        if template is None:
+            available = ", ".join(sorted(self.actions.keys()))
+            raise ValueError(
+                f"Unknown action: '{action}'. Available: {available}"
+            )
+
+        # Level check
+        if template.level == "deny":
+            raise ValueError(f"Action '{action}' is explicitly denied by policy")
+
+        # CWD check
         resolved_cwd = str(Path(cwd).expanduser().resolve())
         if ".." in cwd:
-            logger.warning(f"Path traversal detected in cwd: {cwd}")
-            return "deny"
+            raise ValueError(f"Path traversal detected in cwd: {cwd}")
+        if not template.matches_cwd(resolved_cwd):
+            raise ValueError(
+                f"Action '{action}' not allowed in directory: {resolved_cwd}"
+            )
 
-        # Find the first matching rule (order matters)
-        for rule in self.rules:
-            if rule.matches_cmd(cmd) and rule.matches_args(args) and rule.matches_cwd(resolved_cwd):
-                logger.debug(f"Policy match: {cmd} {args} in {resolved_cwd} → {rule.level}")
-                return rule.level
+        # Parameter validation
+        error = template.validate_params(params)
+        if error:
+            raise ValueError(f"Parameter error for '{action}': {error}")
 
-        logger.debug(f"No policy match: {cmd} {args} in {resolved_cwd} → {self.default_level}")
-        return self.default_level
+        # Build command from template
+        cmd_list = template.build_command(params)
+
+        return cmd_list, template.level, template
+
+    def list_actions(self) -> Dict[str, dict]:
+        """List available actions with their descriptions. For client discovery."""
+        if not self._loaded:
+            self.load()
+        result = {}
+        for name, tmpl in self.actions.items():
+            result[name] = {
+                "description": tmpl.description,
+                "level": tmpl.level,
+                "params": list(tmpl.params.keys()),
+                "working_dirs": tmpl.working_dirs,
+            }
+        return result
 
 
-def osascript_confirm(cmd: str, args: List[str], cwd: str) -> bool:
+def osascript_confirm(cmd_list: List[str], cwd: str, description: str = "") -> bool:
     """
     Show a macOS confirmation dialog via osascript.
 
     Single Source of Truth: the displayed text is generated from the SAME
-    cmd/args/cwd that will be passed to subprocess.run().  There is no
-    separate "display" field that could diverge from the actual execution.
+    cmd_list/cwd that will be passed to subprocess.run().
 
     Returns True if the user clicks "Allow", False otherwise.
     """
-    # Build the display string from the exact execution parameters
-    cmd_display = f"{cmd} {' '.join(args)}"
+    cmd_display = " ".join(cmd_list)
     cwd_display = cwd
 
-    # Escape for AppleScript string (backslash and double-quote)
     def escape_applescript(s: str) -> str:
         return s.replace("\\", "\\\\").replace('"', '\\"')
 
-    msg = escape_applescript(f"Execute command:\\n\\n{cmd_display}\\n\\nin: {cwd_display}")
+    if description:
+        msg = escape_applescript(
+            f"{description}\\n\\n{cmd_display}\\n\\nin: {cwd_display}"
+        )
+    else:
+        msg = escape_applescript(
+            f"Execute command:\\n\\n{cmd_display}\\n\\nin: {cwd_display}"
+        )
 
     script = (
         f'display dialog "{msg}" '
@@ -215,7 +288,6 @@ def osascript_confirm(cmd: str, args: List[str], cwd: str) -> bool:
             text=True,
             timeout=70,
         )
-        # osascript returns "button returned:Allow" on success
         approved = "Allow" in result.stdout
         if approved:
             logger.info(f"User APPROVED: {cmd_display}")

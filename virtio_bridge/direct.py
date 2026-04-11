@@ -137,19 +137,23 @@ class DirectClient:
 
     def exec(
         self,
-        cmd: str,
-        args: Optional[list] = None,
+        action: str,
+        params: Optional[Dict[str, str]] = None,
         cwd: str = ".",
-        env: Optional[Dict[str, str]] = None,
         timeout: Optional[float] = None,
     ) -> ExecResponse:
         """
-        Execute a command on the host (Mac) side via the bridge.
+        Execute a predefined action on the host (Mac) side via the bridge.
 
-        The command is subject to the host's exec policy:
-        - "allow" → executed immediately
-        - "confirm" → macOS dialog shown, user must approve
-        - "deny" → rejected without execution
+        The client specifies an action name and parameters — the server
+        resolves this to a command via its policy file.  The client CANNOT
+        construct arbitrary commands.
+
+        Args:
+            action: Predefined action name (e.g., "git_status", "git_commit")
+            params: Template parameters (e.g., {"message": "Add files"})
+            cwd:    Working directory on the host side
+            timeout: Response timeout in seconds
 
         Returns ExecResponse with exit_code, stdout, stderr.
         Raises TimeoutError if no response within timeout seconds.
@@ -158,20 +162,19 @@ class DirectClient:
         req = ExecRequest(
             id="",
             type="exec",
-            cmd=cmd,
-            args=args or [],
+            action=action,
+            params=params or {},
             cwd=cwd,
-            env=env,
             timeout=t,
         )
 
-        logger.info(f"EXEC → {cmd} {' '.join(args or [])} in {cwd} (id={req.id})")
+        logger.info(f"EXEC → action={action} params={params} cwd={cwd} (id={req.id})")
         self.bridge.write_request(req)
 
         resp = self.bridge.wait_exec_response(req.id, timeout=t + 10)  # Extra grace for confirm dialog
         if resp is None:
             raise TimeoutError(
-                f"No exec response within {t + 10}s for {req.id} ({cmd})"
+                f"No exec response within {t + 10}s for {req.id} ({action})"
             )
 
         if resp.error:
@@ -263,8 +266,8 @@ def run_direct(
 
 def run_exec(
     bridge_dir: str,
-    cmd: str,
-    args: list,
+    action: str,
+    params: Optional[Dict[str, str]] = None,
     cwd: str = ".",
     timeout: float = 30.0,
     crypto=None,
@@ -278,7 +281,7 @@ def run_exec(
         crypto=crypto,
     )
 
-    resp = client.exec(cmd=cmd, args=args, cwd=cwd, timeout=timeout)
+    resp = client.exec(action=action, params=params or {}, cwd=cwd, timeout=timeout)
 
     if resp.error:
         print(f"Error: {resp.error}", file=sys.stderr)

@@ -1,28 +1,109 @@
 {
-  "policies": [
-    {
-      "cmd": "git",
-      "args_pattern": ["status", "log", "diff", "branch"],
+  "actions": {
+    "git_status": {
+      "cmd": ["git", "status"],
       "level": "allow",
-      "working_dirs": ["~/Documents/buddy-*", "~/Documents/virtio-bridge", "~/Documents/mybrain-tv-*", "~/Documents/mybrain.tv", "~/Documents/dent"]
+      "working_dirs": ["~/Documents/buddy-*", "~/Documents/virtio-bridge", "~/Documents/mybrain-tv-*", "~/Documents/mybrain.tv", "~/Documents/dent"],
+      "description": "Show git working tree status"
     },
-    {
-      "cmd": "git",
-      "args_pattern": ["commit", "add", "push", "pull", "checkout", "merge", "rebase", "stash", "tag"],
+    "git_log": {
+      "cmd": ["git", "log", "--oneline", "-20"],
+      "level": "allow",
+      "working_dirs": ["~/Documents/buddy-*", "~/Documents/virtio-bridge", "~/Documents/mybrain-tv-*", "~/Documents/mybrain.tv", "~/Documents/dent"],
+      "description": "Show recent git log"
+    },
+    "git_diff": {
+      "cmd": ["git", "diff"],
+      "level": "allow",
+      "working_dirs": ["~/Documents/buddy-*", "~/Documents/virtio-bridge", "~/Documents/mybrain-tv-*", "~/Documents/mybrain.tv", "~/Documents/dent"],
+      "description": "Show git diff"
+    },
+    "git_branch": {
+      "cmd": ["git", "branch", "-a"],
+      "level": "allow",
+      "working_dirs": ["~/Documents/buddy-*", "~/Documents/virtio-bridge", "~/Documents/mybrain-tv-*", "~/Documents/mybrain.tv", "~/Documents/dent"],
+      "description": "List git branches"
+    },
+    "git_add_all": {
+      "cmd": ["git", "add", "-A"],
+      "level": "allow",
+      "working_dirs": ["~/Documents/buddy-*", "~/Documents/virtio-bridge", "~/Documents/mybrain-tv-*", "~/Documents/mybrain.tv", "~/Documents/dent"],
+      "description": "Stage all changes"
+    },
+    "git_add": {
+      "cmd": ["git", "add", "{paths}"],
+      "level": "allow",
+      "working_dirs": ["~/Documents/buddy-*", "~/Documents/virtio-bridge", "~/Documents/mybrain-tv-*", "~/Documents/mybrain.tv", "~/Documents/dent"],
+      "params": {
+        "paths": {"type": "string", "max_length": 1000, "split": true}
+      },
+      "description": "Stage specific paths"
+    },
+    "git_commit": {
+      "cmd": ["git", "commit", "-m", "{message}"],
+      "level": "allow",
+      "working_dirs": ["~/Documents/buddy-*", "~/Documents/virtio-bridge", "~/Documents/mybrain-tv-*", "~/Documents/mybrain.tv", "~/Documents/dent"],
+      "params": {
+        "message": {"type": "string", "max_length": 500}
+      },
+      "description": "Commit staged changes"
+    },
+    "git_push": {
+      "cmd": ["git", "push"],
+      "level": "allow",
+      "working_dirs": ["~/Documents/buddy-*", "~/Documents/virtio-bridge", "~/Documents/mybrain-tv-*", "~/Documents/mybrain.tv", "~/Documents/dent"],
+      "description": "Push to remote"
+    },
+    "git_pull": {
+      "cmd": ["git", "pull"],
+      "level": "allow",
+      "working_dirs": ["~/Documents/buddy-*", "~/Documents/virtio-bridge", "~/Documents/mybrain-tv-*", "~/Documents/mybrain.tv", "~/Documents/dent"],
+      "description": "Pull from remote"
+    },
+    "git_stash": {
+      "cmd": ["git", "stash"],
+      "level": "allow",
+      "working_dirs": ["~/Documents/buddy-*", "~/Documents/virtio-bridge", "~/Documents/mybrain-tv-*", "~/Documents/mybrain.tv", "~/Documents/dent"],
+      "description": "Stash changes"
+    },
+    "git_stash_pop": {
+      "cmd": ["git", "stash", "pop"],
+      "level": "allow",
+      "working_dirs": ["~/Documents/buddy-*", "~/Documents/virtio-bridge", "~/Documents/mybrain-tv-*", "~/Documents/mybrain.tv", "~/Documents/dent"],
+      "description": "Pop stashed changes"
+    },
+    "git_merge": {
+      "cmd": ["git", "merge", "{branch}"],
       "level": "confirm",
-      "working_dirs": ["~/Documents/buddy-*", "~/Documents/virtio-bridge", "~/Documents/mybrain-tv-*", "~/Documents/mybrain.tv", "~/Documents/dent"]
+      "working_dirs": ["~/Documents/buddy-*", "~/Documents/virtio-bridge", "~/Documents/mybrain-tv-*", "~/Documents/mybrain.tv", "~/Documents/dent"],
+      "params": {
+        "branch": {"type": "string", "max_length": 100}
+      },
+      "description": "Merge a branch (history-altering)"
     },
-    {
-      "cmd": "rm",
-      "args_pattern": [".git/*.lock"],
-      "level": "allow",
-      "working_dirs": ["~/Documents/buddy-*", "~/Documents/virtio-bridge"]
+    "git_rebase": {
+      "cmd": ["git", "rebase", "{branch}"],
+      "level": "confirm",
+      "working_dirs": ["~/Documents/buddy-*", "~/Documents/virtio-bridge", "~/Documents/mybrain-tv-*", "~/Documents/mybrain.tv", "~/Documents/dent"],
+      "params": {
+        "branch": {"type": "string", "max_length": 100}
+      },
+      "description": "Rebase onto a branch (history-altering)"
     },
-    {
-      "cmd": "ls",
+    "rm_git_lock": {
+      "cmd": ["rm", "-f", "{lockfile}"],
       "level": "allow",
-      "working_dirs": ["~/Documents"]
+      "working_dirs": ["~/Documents/buddy-*", "~/Documents/virtio-bridge"],
+      "params": {
+        "lockfile": {"type": "string", "enum": [".git/index.lock", ".git/HEAD.lock"]}
+      },
+      "description": "Remove git lock files"
+    },
+    "ls": {
+      "cmd": ["ls", "-la"],
+      "level": "allow",
+      "working_dirs": ["~/Documents"],
+      "description": "List directory contents"
     }
-  ],
-  "default": "deny"
+  }
 }

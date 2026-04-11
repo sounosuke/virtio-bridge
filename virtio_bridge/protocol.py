@@ -71,16 +71,19 @@ class BridgeRequest:
 
 @dataclass
 class ExecRequest:
-    """A command execution request relayed through the filesystem.
+    """A predefined action execution request relayed through the filesystem.
 
     Distinguished from BridgeRequest by ``type == "exec"``.
+
+    Security: The client specifies an action name and parameters, NOT a
+    command string.  The server maps the action to a predefined command
+    template in its policy file (which the client cannot modify).
     """
     id: str
     type: str  # Always "exec"
-    cmd: str
-    args: list = field(default_factory=list)
+    action: str  # Action name (e.g., "git_status", "git_commit")
+    params: Dict[str, str] = field(default_factory=dict)  # Template parameters
     cwd: str = ""
-    env: Optional[Dict[str, str]] = None  # Extra env vars (merged with os.environ)
     timeout: float = 30.0  # Per-command timeout
     timestamp: float = 0.0
 
