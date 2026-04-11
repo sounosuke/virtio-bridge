@@ -104,11 +104,13 @@ def cmd_server(args: argparse.Namespace) -> None:
     setup_logging(args.verbose)
     allow_hosts = parse_allow_hosts(args.allow_host)
     crypto, dh = _resolve_crypto(args, role="host")
+    exec_policy = getattr(args, "exec_policy", None)
     run_server(
         bridge_dir=args.bridge_dir,
         target=args.target,
         allow_hosts=allow_hosts,
         crypto=crypto,
+        exec_policy_path=exec_policy,
     )
 
 
@@ -230,6 +232,27 @@ def cmd_direct(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_exec(args: argparse.Namespace) -> None:
+    """Execute a command on the host side via the bridge."""
+    from .direct import run_exec
+    setup_logging(args.verbose)
+    crypto = _make_crypto(getattr(args, "secret", None))
+
+    # Strip leading "--" that argparse.REMAINDER may include
+    exec_args = args.args or []
+    if exec_args and exec_args[0] == "--":
+        exec_args = exec_args[1:]
+
+    run_exec(
+        bridge_dir=args.bridge_dir,
+        cmd=args.cmd,
+        args=exec_args,
+        cwd=args.cwd,
+        timeout=args.timeout,
+        crypto=crypto,
+    )
+
+
 def cmd_integration_test(args: argparse.Namespace) -> None:
     """Run self-contained integration tests."""
     setup_logging(args.verbose)
@@ -291,6 +314,12 @@ def main() -> None:
         "--allow-host",
         default=ALLOW_HOST_DEFAULT,
         help=f"Comma-separated list of allowed target hosts. Default: {ALLOW_HOST_DEFAULT}",
+    )
+    p_server.add_argument(
+        "--exec-policy",
+        default=None,
+        help="Path to exec policy JSON file. Default: ~/.config/virtio-bridge/exec-policy.json. "
+             "Controls which commands can be executed via 'exec' requests.",
     )
     p_server.add_argument(
         "--secret", "-s",
@@ -484,6 +513,46 @@ def main() -> None:
     )
     p_direct.add_argument("--verbose", "-v", action="store_true")
     p_direct.set_defaults(func=cmd_direct)
+
+    # --- exec (remote command execution) ---
+    p_exec = subparsers.add_parser(
+        "exec",
+        help="Execute a command on the host (Mac) side through the bridge. "
+             "Subject to the host's exec policy (allow/confirm/deny).",
+    )
+    p_exec.add_argument(
+        "cmd",
+        help="Command to execute (e.g., git, rm)",
+    )
+    p_exec.add_argument(
+        "args",
+        nargs=argparse.REMAINDER,
+        help="Command arguments (e.g., commit -m 'message'). "
+             "Use -- before the command if args start with dashes.",
+    )
+    p_exec.add_argument(
+        "--cwd",
+        default=".",
+        help="Working directory on the host side (e.g., ~/Documents/buddy-eval)",
+    )
+    p_exec.add_argument(
+        "--bridge-dir", "-d",
+        required=True,
+        help="Path to the shared bridge directory",
+    )
+    p_exec.add_argument(
+        "--timeout",
+        type=float,
+        default=30.0,
+        help="Command timeout in seconds. Default: 30",
+    )
+    p_exec.add_argument(
+        "--secret", "-s",
+        default=None,
+        help="Shared secret for AES-256-GCM encryption.",
+    )
+    p_exec.add_argument("--verbose", "-v", action="store_true")
+    p_exec.set_defaults(func=cmd_exec)
 
     # --- cleanup ---
     p_cleanup = subparsers.add_parser(

@@ -9,7 +9,9 @@ Supports both regular and streaming responses.
 
 import json
 import logging
+import os
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -23,7 +25,10 @@ from .protocol import (
     BridgeDirectory,
     BridgeRequest,
     BridgeResponse,
+    ExecRequest,
+    ExecResponse,
 )
+from .exec_policy import ExecPolicy, osascript_confirm
 from .security import LOCAL_HOSTS, parse_allow_hosts, validate_target_url
 from .watcher import FileWatcher
 
@@ -61,6 +66,7 @@ class BridgeServer:
         workers: int = 4,
         allow_hosts: frozenset[str] | None = None,
         crypto=None,
+        exec_policy_path: str | Path | None = None,
     ):
         self.bridge = BridgeDirectory(bridge_dir, crypto=crypto)
         self.target = target.rstrip("/") if target else None
@@ -68,6 +74,10 @@ class BridgeServer:
         self.allow_hosts = allow_hosts or LOCAL_HOSTS
         self._running = False
         self._watcher: Optional[FileWatcher] = None
+
+        # Exec policy (loaded lazily on first exec request)
+        self._exec_policy_path = exec_policy_path
+        self._exec_policy: Optional[ExecPolicy] = None
 
         # Validate default target against allow list at startup (if given)
         if self.target:
@@ -148,7 +158,19 @@ class BridgeServer:
         t.start()
 
     def _handle_request(self, req_id: str) -> None:
-        """Handle a single request: read, forward, write response."""
+        """Handle a single request: peek type, dispatch to HTTP or exec handler."""
+        # Peek at the type field to decide how to handle
+        req_type = self.bridge.peek_request_type(req_id)
+
+        if req_type == "exec":
+            self._handle_exec(req_id)
+            return
+
+        # Default: HTTP relay (original behavior)
+        self._handle_http_request(req_id)
+
+    def _handle_http_request(self, req_id: str) -> None:
+        """Handle an HTTP relay request: read, forward, write response."""
         req = self.bridge.consume_request(req_id)
         if req is None:
             logger.warning(f"Request {req_id} disappeared before processing")
@@ -197,6 +219,106 @@ class BridgeServer:
 
         elapsed = time.time() - start
         logger.info(f"← {req_id} ({elapsed:.2f}s)")
+
+    def _get_exec_policy(self) -> ExecPolicy:
+        """Lazily load the exec policy."""
+        if self._exec_policy is None:
+            self._exec_policy = ExecPolicy(self._exec_policy_path)
+            self._exec_policy.load()
+        return self._exec_policy
+
+    def _handle_exec(self, req_id: str) -> None:
+        """Handle a command execution request."""
+        exec_req = self.bridge.consume_exec_request(req_id)
+        if exec_req is None:
+            logger.warning(f"Exec request {req_id} disappeared before processing")
+            return
+
+        cmd = exec_req.cmd
+        args = exec_req.args
+        cwd = exec_req.cwd
+        logger.info(f"EXEC → {cmd} {' '.join(args)} in {cwd} (id={req_id})")
+        start = time.time()
+
+        # Resolve and validate cwd
+        try:
+            resolved_cwd = str(Path(cwd).expanduser().resolve())
+        except Exception as e:
+            resp = ExecResponse(id=req_id, error=f"Invalid cwd: {e}")
+            self.bridge.write_exec_response(resp)
+            return
+
+        if not Path(resolved_cwd).is_dir():
+            resp = ExecResponse(id=req_id, error=f"cwd is not a directory: {resolved_cwd}")
+            self.bridge.write_exec_response(resp)
+            return
+
+        # Check exec policy
+        try:
+            policy = self._get_exec_policy()
+            level = policy.check(cmd, args, resolved_cwd)
+        except FileNotFoundError as e:
+            resp = ExecResponse(id=req_id, error=str(e))
+            self.bridge.write_exec_response(resp)
+            return
+        except Exception as e:
+            resp = ExecResponse(id=req_id, error=f"Policy error: {e}")
+            self.bridge.write_exec_response(resp)
+            return
+
+        if level == "deny":
+            logger.warning(f"EXEC DENIED by policy: {cmd} {args} in {resolved_cwd}")
+            resp = ExecResponse(id=req_id, error=f"Denied by policy: {cmd} {' '.join(args)}")
+            self.bridge.write_exec_response(resp)
+            elapsed = time.time() - start
+            logger.info(f"EXEC ← {req_id} DENIED ({elapsed:.2f}s)")
+            return
+
+        if level == "confirm":
+            # Single Source of Truth: same cmd/args/cwd goes to display AND execution
+            approved = osascript_confirm(cmd, args, resolved_cwd)
+            if not approved:
+                logger.info(f"EXEC REJECTED by user: {cmd} {args}")
+                resp = ExecResponse(id=req_id, error=f"Rejected by user: {cmd} {' '.join(args)}")
+                self.bridge.write_exec_response(resp)
+                elapsed = time.time() - start
+                logger.info(f"EXEC ← {req_id} REJECTED ({elapsed:.2f}s)")
+                return
+
+        # Execute the command
+        try:
+            # Build env (inherit + optional extras)
+            env = os.environ.copy()
+            if exec_req.env:
+                env.update(exec_req.env)
+
+            result = subprocess.run(
+                [cmd] + args,
+                cwd=resolved_cwd,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=exec_req.timeout,
+            )
+
+            resp = ExecResponse(
+                id=req_id,
+                exit_code=result.returncode,
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+        except subprocess.TimeoutExpired:
+            resp = ExecResponse(id=req_id, error=f"Command timed out after {exec_req.timeout}s")
+        except FileNotFoundError:
+            resp = ExecResponse(id=req_id, error=f"Command not found: {cmd}")
+        except PermissionError:
+            resp = ExecResponse(id=req_id, error=f"Permission denied: {cmd}")
+        except Exception as e:
+            resp = ExecResponse(id=req_id, error=f"Execution error: {e}")
+
+        self.bridge.write_exec_response(resp)
+        elapsed = time.time() - start
+        logger.info(f"EXEC ← {req_id} exit={resp.exit_code} ({elapsed:.2f}s)")
 
     def _handle_regular_request(self, req: BridgeRequest, target: str) -> None:
         """Forward a regular (non-streaming) HTTP request."""
@@ -295,9 +417,13 @@ def run_server(
     target: str | None = None,
     allow_hosts: frozenset[str] | None = None,
     crypto=None,
+    exec_policy_path: str | None = None,
 ) -> None:
     """Entry point for running the server."""
-    server = BridgeServer(bridge_dir=bridge_dir, target=target, allow_hosts=allow_hosts, crypto=crypto)
+    server = BridgeServer(
+        bridge_dir=bridge_dir, target=target, allow_hosts=allow_hosts,
+        crypto=crypto, exec_policy_path=exec_policy_path,
+    )
 
     def signal_handler(sig, frame):
         logger.info("Shutting down...")

@@ -1,0 +1,28 @@
+{
+  "policies": [
+    {
+      "cmd": "git",
+      "args_pattern": ["status", "log", "diff", "branch"],
+      "level": "allow",
+      "working_dirs": ["~/Documents/buddy-*", "~/Documents/virtio-bridge", "~/Documents/mybrain-tv-*", "~/Documents/mybrain.tv", "~/Documents/dent"]
+    },
+    {
+      "cmd": "git",
+      "args_pattern": ["commit", "add", "push", "pull", "checkout", "merge", "rebase", "stash", "tag"],
+      "level": "confirm",
+      "working_dirs": ["~/Documents/buddy-*", "~/Documents/virtio-bridge", "~/Documents/mybrain-tv-*", "~/Documents/mybrain.tv", "~/Documents/dent"]
+    },
+    {
+      "cmd": "rm",
+      "args_pattern": [".git/*.lock"],
+      "level": "allow",
+      "working_dirs": ["~/Documents/buddy-*", "~/Documents/virtio-bridge"]
+    },
+    {
+      "cmd": "ls",
+      "level": "allow",
+      "working_dirs": ["~/Documents"]
+    }
+  ],
+  "default": "deny"
+}

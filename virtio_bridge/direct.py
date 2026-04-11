@@ -31,6 +31,8 @@ from .protocol import (
     BridgeDirectory,
     BridgeRequest,
     BridgeResponse,
+    ExecRequest,
+    ExecResponse,
     DEFAULT_TIMEOUT,
 )
 
@@ -133,6 +135,51 @@ class DirectClient:
     def post(self, path: str, body: str, **kw) -> BridgeResponse:
         return self.request("POST", path, body=body, headers={"Content-Type": "application/json"}, **kw)
 
+    def exec(
+        self,
+        cmd: str,
+        args: Optional[list] = None,
+        cwd: str = ".",
+        env: Optional[Dict[str, str]] = None,
+        timeout: Optional[float] = None,
+    ) -> ExecResponse:
+        """
+        Execute a command on the host (Mac) side via the bridge.
+
+        The command is subject to the host's exec policy:
+        - "allow" → executed immediately
+        - "confirm" → macOS dialog shown, user must approve
+        - "deny" → rejected without execution
+
+        Returns ExecResponse with exit_code, stdout, stderr.
+        Raises TimeoutError if no response within timeout seconds.
+        """
+        t = timeout or self.timeout
+        req = ExecRequest(
+            id="",
+            type="exec",
+            cmd=cmd,
+            args=args or [],
+            cwd=cwd,
+            env=env,
+            timeout=t,
+        )
+
+        logger.info(f"EXEC → {cmd} {' '.join(args or [])} in {cwd} (id={req.id})")
+        self.bridge.write_request(req)
+
+        resp = self.bridge.wait_exec_response(req.id, timeout=t + 10)  # Extra grace for confirm dialog
+        if resp is None:
+            raise TimeoutError(
+                f"No exec response within {t + 10}s for {req.id} ({cmd})"
+            )
+
+        if resp.error:
+            logger.info(f"EXEC ← {req.id} ERROR: {resp.error}")
+        else:
+            logger.info(f"EXEC ← {req.id} exit={resp.exit_code}")
+        return resp
+
 
 class DirectTcpClient:
     """
@@ -212,3 +259,33 @@ def run_direct(
                 print(json.dumps(obj, ensure_ascii=False, indent=2))
             except (json.JSONDecodeError, TypeError):
                 print(resp.body)
+
+
+def run_exec(
+    bridge_dir: str,
+    cmd: str,
+    args: list,
+    cwd: str = ".",
+    timeout: float = 30.0,
+    crypto=None,
+) -> None:
+    """CLI entry point for the *exec* subcommand."""
+    import sys
+
+    client = DirectClient(
+        bridge_dir=bridge_dir,
+        timeout=timeout,
+        crypto=crypto,
+    )
+
+    resp = client.exec(cmd=cmd, args=args, cwd=cwd, timeout=timeout)
+
+    if resp.error:
+        print(f"Error: {resp.error}", file=sys.stderr)
+        sys.exit(1)
+
+    if resp.stdout:
+        print(resp.stdout, end="")
+    if resp.stderr:
+        print(resp.stderr, end="", file=sys.stderr)
+    sys.exit(resp.exit_code)

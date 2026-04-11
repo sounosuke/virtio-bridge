@@ -70,6 +70,59 @@ class BridgeRequest:
 
 
 @dataclass
+class ExecRequest:
+    """A command execution request relayed through the filesystem.
+
+    Distinguished from BridgeRequest by ``type == "exec"``.
+    """
+    id: str
+    type: str  # Always "exec"
+    cmd: str
+    args: list = field(default_factory=list)
+    cwd: str = ""
+    env: Optional[Dict[str, str]] = None  # Extra env vars (merged with os.environ)
+    timeout: float = 30.0  # Per-command timeout
+    timestamp: float = 0.0
+
+    def __post_init__(self):
+        if not self.id:
+            self.id = uuid.uuid4().hex[:12]
+        if self.timestamp == 0.0:
+            self.timestamp = time.time()
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self), ensure_ascii=False)
+
+    @classmethod
+    def from_json(cls, data: str) -> "ExecRequest":
+        d = json.loads(data)
+        return cls(**d)
+
+
+@dataclass
+class ExecResponse:
+    """Response from a command execution."""
+    id: str
+    exit_code: int = -1
+    stdout: str = ""
+    stderr: str = ""
+    error: Optional[str] = None  # Policy denial or system error
+    timestamp: float = 0.0
+
+    def __post_init__(self):
+        if self.timestamp == 0.0:
+            self.timestamp = time.time()
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self), ensure_ascii=False)
+
+    @classmethod
+    def from_json(cls, data: str) -> "ExecResponse":
+        d = json.loads(data)
+        return cls(**d)
+
+
+@dataclass
 class BridgeResponse:
     """An HTTP response relayed back through the filesystem."""
     id: str
@@ -161,8 +214,8 @@ class BridgeDirectory:
 
     # --- Request operations (client writes, server reads) ---
 
-    def write_request(self, req: BridgeRequest) -> Path:
-        """Write a request file. Returns the file path."""
+    def write_request(self, req) -> Path:
+        """Write a request file (BridgeRequest or ExecRequest). Returns the file path."""
         path = self.requests_dir / f"{req.id}{REQUEST_EXT}"
         return self._safe_write_text(path, req.to_json())
 
@@ -177,6 +230,33 @@ class BridgeDirectory:
         except (json.JSONDecodeError, TypeError):
             return None
 
+    def peek_request_type(self, req_id: str) -> Optional[str]:
+        """Peek at the 'type' field of a request without fully parsing.
+
+        Returns the type string (e.g. "exec") or None for HTTP requests
+        (which have no type field).
+        """
+        path = self.requests_dir / f"{req_id}{REQUEST_EXT}"
+        data = self._safe_read(path)
+        if data is None:
+            return None
+        try:
+            d = json.loads(data)
+            return d.get("type")
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+    def read_exec_request(self, req_id: str) -> Optional[ExecRequest]:
+        """Read an exec request file by ID."""
+        path = self.requests_dir / f"{req_id}{REQUEST_EXT}"
+        data = self._safe_read(path)
+        if data is None:
+            return None
+        try:
+            return ExecRequest.from_json(data)
+        except (json.JSONDecodeError, TypeError, KeyError):
+            return None
+
     def consume_request(self, req_id: str) -> Optional[BridgeRequest]:
         """Read and delete a request file (atomic consume)."""
         req = self.read_request(req_id)
@@ -187,6 +267,42 @@ class BridgeDirectory:
             except (FileNotFoundError, PermissionError):
                 pass
         return req
+
+    def consume_exec_request(self, req_id: str) -> Optional[ExecRequest]:
+        """Read and delete an exec request file (atomic consume)."""
+        req = self.read_exec_request(req_id)
+        if req:
+            ext = ".enc" if self.crypto else REQUEST_EXT
+            try:
+                (self.requests_dir / f"{req_id}{ext}").unlink()
+            except (FileNotFoundError, PermissionError):
+                pass
+        return req
+
+    def write_exec_response(self, resp: ExecResponse) -> Path:
+        """Write an exec response file. Returns the file path."""
+        path = self.responses_dir / f"{resp.id}{RESPONSE_EXT}"
+        return self._safe_write_text(path, resp.to_json())
+
+    def wait_exec_response(self, req_id: str, timeout: float = DEFAULT_TIMEOUT) -> Optional[ExecResponse]:
+        """Wait for an exec response file to appear. Returns None on timeout."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            path = self.responses_dir / f"{req_id}{RESPONSE_EXT}"
+            data = self._safe_read(path)
+            if data is not None:
+                try:
+                    resp = ExecResponse.from_json(data)
+                    ext = ".enc" if self.crypto else RESPONSE_EXT
+                    try:
+                        (self.responses_dir / f"{req_id}{ext}").unlink()
+                    except (FileNotFoundError, PermissionError):
+                        pass
+                    return resp
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            time.sleep(RESPONSE_POLL_INTERVAL)
+        return None
 
     def list_request_ids(self) -> list[str]:
         """List all pending request IDs, sorted by modification time."""
