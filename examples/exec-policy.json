@@ -104,6 +104,52 @@
       "level": "allow",
       "working_dirs": ["~/Documents"],
       "description": "List directory contents"
+    },
+    "check_port": {
+      "cmd": ["lsof", "-i", ":{port}", "-P", "-n"],
+      "level": "allow",
+      "working_dirs": ["~/Documents"],
+      "params": {
+        "port": {"type": "string", "max_length": 5}
+      },
+      "description": "Check if a port is in use"
+    },
+    "ps_grep": {
+      "cmd": ["bash", "-c", "ps aux | grep {pattern} | grep -v grep"],
+      "level": "allow",
+      "working_dirs": ["~/Documents"],
+      "params": {
+        "pattern": {"type": "string", "max_length": 100}
+      },
+      "description": "Search running processes"
+    },
+    "service_restart": {
+      "cmd": ["launchctl", "kickstart", "-k", "gui/501/{service}"],
+      "level": "allow",
+      "working_dirs": ["~/Documents"],
+      "params": {
+        "service": {"type": "string", "enum": [
+          "com.virtio-bridge.server",
+          "com.buddy.webrender-server",
+          "com.buddy.a2e-server",
+          "com.buddy.vllm-mlx"
+        ]}
+      },
+      "description": "Restart a launchd service"
+    },
+    "service_status": {
+      "cmd": ["launchctl", "list", "{service}"],
+      "level": "allow",
+      "working_dirs": ["~/Documents"],
+      "params": {
+        "service": {"type": "string", "enum": [
+          "com.virtio-bridge.server",
+          "com.buddy.webrender-server",
+          "com.buddy.a2e-server",
+          "com.buddy.vllm-mlx"
+        ]}
+      },
+      "description": "Check launchd service status"
     }
   }
 }
