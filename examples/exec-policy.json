@@ -132,7 +132,8 @@
           "com.virtio-bridge.server",
           "com.buddy.webrender-server",
           "com.buddy.a2e-server",
-          "com.buddy.vllm-mlx"
+          "com.buddy.vllm-mlx",
+          "com.buddy.memory-api"
         ]}
       },
       "description": "Restart a launchd service"
@@ -146,10 +147,32 @@
           "com.virtio-bridge.server",
           "com.buddy.webrender-server",
           "com.buddy.a2e-server",
-          "com.buddy.vllm-mlx"
+          "com.buddy.vllm-mlx",
+          "com.buddy.memory-api"
         ]}
       },
       "description": "Check launchd service status"
+    },
+    "tail_log": {
+      "cmd": ["tail", "-n", "{lines}", "{logfile}"],
+      "level": "allow",
+      "working_dirs": ["~/Documents"],
+      "params": {
+        "logfile": {"type": "string", "enum": [
+          "/tmp/buddy-memory-api.log",
+          "/tmp/buddy-memory-api.err",
+          "/tmp/virtio-bridge.log",
+          "/tmp/virtio-bridge.err",
+          "/tmp/buddy-vllm-mlx.log",
+          "/tmp/buddy-vllm-mlx.err",
+          "/tmp/buddy-webrender-server.log",
+          "/tmp/buddy-webrender-server.err",
+          "/tmp/buddy-a2e-server.log",
+          "/tmp/buddy-a2e-server.err"
+        ]},
+        "lines": {"type": "string", "max_length": 4}
+      },
+      "description": "Read last N lines from a specific log file"
     }
   }
 }
