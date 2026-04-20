@@ -173,6 +173,22 @@
         "lines": {"type": "string", "max_length": 4}
       },
       "description": "Read last N lines from a specific log file"
+    },
+    "memory_api_health": {
+      "cmd": ["curl", "-s", "--max-time", "5", "http://localhost:11436/memory/health"],
+      "level": "allow",
+      "working_dirs": ["~/Documents"],
+      "description": "GET memory-api /memory/health"
+    },
+    "memory_api_post": {
+      "cmd": ["curl", "-s", "--max-time", "180", "-X", "POST", "-H", "Content-Type: application/json", "-d", "{body}", "http://localhost:11436/memory/{endpoint}"],
+      "level": "allow",
+      "working_dirs": ["~/Documents"],
+      "params": {
+        "endpoint": {"type": "string", "enum": ["generate", "validate", "save-parallel", "evaluate", "learn"]},
+        "body": {"type": "string", "max_length": 80000}
+      },
+      "description": "POST JSON body to memory-api endpoint (localhost:11436/memory/{endpoint})"
     }
   }
 }
