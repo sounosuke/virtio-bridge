@@ -37,6 +37,7 @@ Levels:
 
 import json
 import logging
+import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,6 +48,9 @@ logger = logging.getLogger("virtio-bridge.exec-policy")
 DEFAULT_POLICY_PATH = Path.home() / ".config" / "virtio-bridge" / "exec-policy.json"
 
 VALID_LEVELS = {"allow", "confirm", "deny"}
+
+# Matches {name} placeholders where name is [A-Za-z_][A-Za-z0-9_]*
+_PARAM_RE = re.compile(r"\{(\w+)\}")
 
 
 @dataclass
@@ -59,17 +63,30 @@ class ActionTemplate:
     params: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     description: str = ""  # Human-readable description for confirm dialog
 
+    def _referenced_params(self) -> List[str]:
+        """Return all param names referenced anywhere in the cmd template.
+
+        Supports both whole-element placeholders (``"{name}"``) and embedded
+        placeholders (``"gui/501/{name}"``, ``"prefix-{name}-suffix"``).
+        Order is preserved, duplicates removed.
+        """
+        seen: List[str] = []
+        for part in self.cmd:
+            for match in _PARAM_RE.finditer(part):
+                name = match.group(1)
+                if name not in seen:
+                    seen.append(name)
+        return seen
+
     def validate_params(self, provided: Dict[str, str]) -> Optional[str]:
         """Validate provided parameters against the template spec.
 
         Returns None on success, or an error message string.
         """
         # Check for required params (any param in cmd template is required)
-        for part in self.cmd:
-            if part.startswith("{") and part.endswith("}"):
-                param_name = part[1:-1]
-                if param_name not in provided:
-                    return f"Missing required parameter: {param_name}"
+        for param_name in self._referenced_params():
+            if param_name not in provided:
+                return f"Missing required parameter: {param_name}"
 
         # Validate each provided param
         for name, value in provided.items():
@@ -93,11 +110,24 @@ class ActionTemplate:
             if allowed_values and value not in allowed_values:
                 return f"Parameter {name} must be one of: {allowed_values}"
 
+            # split is only meaningful for whole-element placeholders
+            if spec.get("split") and not self._is_whole_element_param(name):
+                return (
+                    f"Parameter {name} has split=true but is embedded in a "
+                    f"larger string; split requires a standalone placeholder"
+                )
+
         return None
 
     def _is_template_param(self, name: str) -> bool:
-        """Check if a param name appears in the cmd template."""
-        return f"{{{name}}}" in " ".join(self.cmd)
+        """Check if a param name appears anywhere in the cmd template."""
+        pattern = f"{{{name}}}"
+        return any(pattern in part for part in self.cmd)
+
+    def _is_whole_element_param(self, name: str) -> bool:
+        """True iff some cmd element is exactly ``"{name}"`` (nothing else)."""
+        target = f"{{{name}}}"
+        return any(part == target for part in self.cmd)
 
     def build_command(self, params: Dict[str, str]) -> List[str]:
         """Expand the command template with provided parameters.
@@ -105,20 +135,32 @@ class ActionTemplate:
         Returns a list of strings ready for subprocess.run().
         No shell expansion — parameters are inserted as literal values.
 
-        If a parameter spec has ``"split": true``, the value is split by
-        whitespace and inserted as multiple arguments.  This is useful for
-        commands like ``git add {paths}`` where paths is "file1 file2".
+        Handles both whole-element placeholders (``"{name}"``) and embedded
+        placeholders (``"gui/501/{name}"``). For embedded templates, all
+        ``{name}`` occurrences in a single element are replaced in place.
+
+        If a parameter spec has ``"split": true`` AND the placeholder is the
+        entire cmd element, the value is split by whitespace and inserted as
+        multiple arguments. Split with embedded placeholders is rejected at
+        validate_params time.
         """
         result = []
         for part in self.cmd:
-            if part.startswith("{") and part.endswith("}"):
-                param_name = part[1:-1]
+            whole_match = _PARAM_RE.fullmatch(part)
+            if whole_match:
+                param_name = whole_match.group(1)
                 value = params[param_name]
                 spec = self.params.get(param_name, {})
                 if spec.get("split"):
                     result.extend(value.split())
                 else:
                     result.append(value)
+            elif _PARAM_RE.search(part):
+                # Embedded placeholder(s) — substitute all occurrences.
+                substituted = _PARAM_RE.sub(
+                    lambda m: params[m.group(1)], part
+                )
+                result.append(substituted)
             else:
                 result.append(part)
         return result
