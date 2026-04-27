@@ -131,8 +131,10 @@
         "service": {"type": "string", "enum": [
           "com.virtio-bridge.server",
           "com.buddy.webrender-server",
-          "com.buddy.a2e-server",
-          "com.buddy.vllm-mlx",
+          "com.buddy.audio2expr-server",
+          "com.buddy.emotion-ws-server",
+          "com.buddy.vllm-mlx-server",
+          "com.buddy.mlx-server",
           "com.buddy.memory-api"
         ]}
       },
@@ -146,8 +148,10 @@
         "service": {"type": "string", "enum": [
           "com.virtio-bridge.server",
           "com.buddy.webrender-server",
-          "com.buddy.a2e-server",
-          "com.buddy.vllm-mlx",
+          "com.buddy.audio2expr-server",
+          "com.buddy.emotion-ws-server",
+          "com.buddy.vllm-mlx-server",
+          "com.buddy.mlx-server",
           "com.buddy.memory-api"
         ]}
       },
@@ -163,6 +167,8 @@
           "/tmp/buddy-memory-api.err",
           "/tmp/virtio-bridge.log",
           "/tmp/virtio-bridge.err",
+          "/tmp/virtio-bridge-server.log",
+          "/tmp/virtio-bridge-server.err",
           "/tmp/buddy-vllm-mlx.log",
           "/tmp/buddy-vllm-mlx.err",
           "/tmp/buddy-webrender-server.log",
@@ -189,6 +195,68 @@
         "body": {"type": "string", "max_length": 80000}
       },
       "description": "POST JSON body to memory-api endpoint (localhost:11436/memory/{endpoint})"
+    },
+    "ls_launch_agents": {
+      "cmd": ["bash", "-c", "ls -la ~/Library/LaunchAgents/ 2>/dev/null"],
+      "level": "allow",
+      "working_dirs": ["~/Documents"],
+      "description": "List ~/Library/LaunchAgents/ contents"
+    },
+    "read_launch_agent_plist": {
+      "cmd": ["cat", "/Users/sonosuke/Library/LaunchAgents/{plist_name}"],
+      "level": "allow",
+      "working_dirs": ["~/Documents"],
+      "params": {
+        "plist_name": {"type": "string", "enum": [
+          "com.buddy.vllm-mlx-server.plist",
+          "com.buddy.mlx-server.plist",
+          "com.buddy.memory-api.plist",
+          "com.buddy.webrender-server.plist",
+          "com.buddy.audio2expr-server.plist",
+          "com.buddy.emotion-ws-server.plist",
+          "com.virtio-bridge.server.plist",
+          "com.sonosuke.sync-claude-md.plist"
+        ]}
+      },
+      "description": "Read a known plist file from ~/Library/LaunchAgents/"
+    },
+    "launchctl_bootout": {
+      "cmd": ["launchctl", "bootout", "gui/501/{service}"],
+      "level": "confirm",
+      "working_dirs": ["~/Documents"],
+      "params": {
+        "service": {"type": "string", "enum": [
+          "com.buddy.vllm-mlx-server",
+          "com.buddy.mlx-server",
+          "com.buddy.memory-api",
+          "com.buddy.webrender-server",
+          "com.buddy.audio2expr-server",
+          "com.buddy.emotion-ws-server"
+        ]}
+      },
+      "description": "Unload a launchd service (history-altering, requires confirm)"
+    },
+    "launchctl_bootstrap": {
+      "cmd": ["launchctl", "bootstrap", "gui/501", "/Users/sonosuke/Library/LaunchAgents/{plist_name}"],
+      "level": "confirm",
+      "working_dirs": ["~/Documents"],
+      "params": {
+        "plist_name": {"type": "string", "enum": [
+          "com.buddy.vllm-mlx-server.plist",
+          "com.buddy.mlx-server.plist",
+          "com.buddy.memory-api.plist",
+          "com.buddy.webrender-server.plist",
+          "com.buddy.audio2expr-server.plist",
+          "com.buddy.emotion-ws-server.plist"
+        ]}
+      },
+      "description": "Load a launchd service from its plist (requires confirm)"
+    },
+    "pkill_mlx_lm_server": {
+      "cmd": ["pkill", "-f", "mlx_lm.server"],
+      "level": "confirm",
+      "working_dirs": ["~/Documents"],
+      "description": "Kill any mlx_lm.server process by command-line pattern (one-shot recovery)"
     }
   }
 }
